@@ -1,0 +1,40 @@
+[package]
+name = "mpv-wallpaper"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal animated wallpaper using libmpv + Wayland layer-shell"
+
+[[bin]]
+name = "mpv-wallpaper"
+path = "src/main.rs"
+
+[dependencies]
+# Wayland client stack
+wayland-client = "0.31"
+wayland-protocols = { version = "0.31", features = ["client", "unstable"] }
+wayland-protocols-wlr = { version = "0.2", features = ["client"] }
+wayland-backend = { version = "0.3", features = ["client_system"] }
+
+# smithay-client-toolkit: abstractions sobre Wayland (output info, seat, etc.)
+smithay-client-toolkit = { version = "0.18", default-features = false, features = [
+    "calloop",
+    "xkbcommon",
+] }
+
+# Event loop
+calloop = "0.13"
+calloop-wayland-source = "0.3"
+
+# libmpv bindings
+libmpv2 = "3"
+
+# Error handling
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Señales POSIX para salida limpia
+libc = "0.2"
+

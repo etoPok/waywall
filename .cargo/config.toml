@@ -1,0 +1,2 @@
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-lEGL", "-lwayland-egl", "-lGL", "-lmpv"]
