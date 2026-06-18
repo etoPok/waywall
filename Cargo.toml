@@ -15,7 +15,7 @@ wayland-protocols = { version = "0.31", features = ["client", "unstable"] }
 wayland-protocols-wlr = { version = "0.2", features = ["client"] }
 wayland-backend = { version = "0.3", features = ["client_system"] }
 
-# smithay-client-toolkit: abstractions sobre Wayland (output info, seat, etc.)
+# smithay-client-toolkit: Wayland abstractions (output info, seat, etc.)
 smithay-client-toolkit = { version = "0.18", default-features = false, features = [
     "calloop",
     "xkbcommon",
@@ -35,6 +35,6 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Señales POSIX para salida limpia
+# POSIX signals for clean shutdown
 libc = "0.2"
 

@@ -1,20 +1,26 @@
 use std::os::raw::{c_int, c_void};
 use std::ptr;
 
+use crate::bindings::egl::eglSwapBuffers;
 use crate::bindings::mpv::{
     mpv_render_context_render, mpv_render_context_report_swap, mpv_render_context_update,
     MpvOpenGLFbo, MpvRenderParam, MPV_RENDER_PARAM_FLIP_Y, MPV_RENDER_PARAM_INVALID,
     MPV_RENDER_PARAM_OPENGL_FBO, MPV_RENDER_UPDATE_FRAME,
 };
-use crate::bindings::egl::eglSwapBuffers;
 use crate::render::state::RenderState;
 
-/// Devuelve true si se renderizó un frame, false si no había frame nuevo.
+/// Returns true if a frame was rendered, false if there was no new frame.
 pub unsafe fn render_frame(rs: &mut RenderState) -> bool {
     let flags = mpv_render_context_update(rs.render_ctx);
     let has_frame = flags & MPV_RENDER_UPDATE_FRAME != 0;
 
     if has_frame {
+        // fbo: 0 default framebuffer
+        // mpv was never told about the EGL surface — it only received
+        // get_proc_address to resolve OpenGL functions. The implicit
+        // connection is: eglMakeCurrent (see egl.rs) bound the EGL surface
+        // to this thread's OpenGL context, so the default FBO (0) on this
+        // thread is always the back buffer of that EGL surface.
         let mut fbo = MpvOpenGLFbo {
             fbo: 0,
             w: rs.width,
@@ -42,9 +48,9 @@ pub unsafe fn render_frame(rs: &mut RenderState) -> bool {
         eglSwapBuffers(rs.egl_display, rs.egl_surface);
         mpv_render_context_report_swap(rs.render_ctx);
     } else {
-        // Swap sin render para commitar la surface Wayland.
-        // Sin commit el wl_callback.frame() nunca se procesa y el
-        // loop de frame callbacks muere.
+        // Swap without render to commit the Wayland surface.
+        // Without a commit, wl_callback.frame() is never processed and the
+        // frame callback loop dies.
         eglSwapBuffers(rs.egl_display, rs.egl_surface);
     }
     has_frame

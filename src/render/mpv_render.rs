@@ -17,7 +17,7 @@ extern "C" fn get_proc_address(_ctx: *mut c_void, name: *const c_char) -> *mut c
 }
 
 pub unsafe fn create_render_context(mpv: &Mpv) -> Result<*mut mpv_render_context> {
-    // libmpv2 expone el handle nativo mediante el campo `ctx` (NonNull<mpv_handle>)
+    // libmpv2 exposes the native handle via the `ctx` field (NonNull<mpv_handle>)
     let mpv_handle_ptr = mpv.ctx.as_ptr() as *mut mpv_handle;
 
     let mut opengl_init_params = MpvOpenGLInitParams {
@@ -48,6 +48,6 @@ pub unsafe fn create_render_context(mpv: &Mpv) -> Result<*mut mpv_render_context
         bail!("mpv_render_context_create falló con código {}", ret);
     }
 
-    info!("mpv_render_context creado correctamente");
+    info!("mpv_render_context created successfully");
     Ok(render_ctx)
 }

@@ -2,8 +2,8 @@ use std::sync::atomic::AtomicBool;
 
 use calloop::ping;
 
-/// Estado compartido entre el callback de mpv (hilo de decodificación)
-/// y el event loop principal.
+/// Shared state between the mpv callback (decoding thread)
+/// and the main event loop.
 pub struct MpvUpdateState {
     pub needs_update: AtomicBool,
     pub ping: ping::Ping,

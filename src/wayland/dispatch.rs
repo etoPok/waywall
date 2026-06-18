@@ -41,7 +41,7 @@ impl Dispatch<WlOutput, ()> for App {
     ) {
         if let wl_output::Event::Mode { width, height, .. } = event {
             if state.width == 0 {
-                info!("Output mode detectado: {}x{}", width, height);
+                info!("Output mode detected: {}x{}", width, height);
                 state.width = width as u32;
                 state.height = height as u32;
             }
@@ -84,7 +84,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for App {
                 // info!("Surface configurada: {}x{}", state.width, state.height);
             }
             zwlr_layer_surface_v1::Event::Closed => {
-                warn!("Layer surface cerrada por el compositor");
+                warn!("Layer surface closed by the compositor");
                 if let Some(signal) = &state.loop_signal {
                     signal.stop();
                 }

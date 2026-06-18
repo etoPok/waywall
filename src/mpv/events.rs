@@ -5,7 +5,7 @@ use tracing::{debug, error, warn};
 
 use crate::bindings::mpv::mpv_error_string;
 
-/// Convierte un error de mpv a su descripción textual usando mpv_error_string.
+/// Converts an mpv error to its textual description using mpv_error_string.
 pub fn fmt_mpv_error(e: &libmpv2::Error) -> String {
     match e {
         libmpv2::Error::Raw(code) => {
@@ -28,10 +28,10 @@ pub fn process_mpv_events(mpv: &mut Mpv, loop_signal: &Option<LoopSignal>) {
     loop {
         match mpv.event_context_mut().wait_event(0.0) {
             Some(Ok(Event::EndFile(reason))) => {
-                warn!("mpv: EndFile ({:?}), el loop debería reiniciar", reason);
+                warn!("mpv: EndFile ({:?}), the loop should restart", reason);
             }
             Some(Ok(Event::Shutdown)) => {
-                error!("mpv se cerró inesperadamente");
+                error!("mpv closed unexpectedly");
                 if let Some(signal) = loop_signal {
                     signal.stop();
                 }
@@ -42,7 +42,7 @@ pub fn process_mpv_events(mpv: &mut Mpv, loop_signal: &Option<LoopSignal>) {
             }
             Some(Ok(_)) => {}
             Some(Err(e)) => {
-                error!("Error en evento mpv: {}", fmt_mpv_error(&e));
+                error!("Error in mpv event: {}", fmt_mpv_error(&e));
                 break;
             }
             None => break,

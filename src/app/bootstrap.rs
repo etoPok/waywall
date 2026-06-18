@@ -32,15 +32,14 @@ pub struct BootstrapOutput {
 }
 
 pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
-    let gpu_api = args.gpu_api;
     let video_path_str = args.video_path;
 
     info!(
-        "mpv-wallpaper iniciando con video: {} (gpu-api: {})",
-        video_path_str, gpu_api
+        "mpv-wallpaper starting with video: {} (gpu-api: OpenGL)",
+        video_path_str
     );
 
-    // Validar que el archivo de video existe antes de continuar
+    // Validate that the video file exists before proceeding
     let video_path = Path::new(&video_path_str);
     if !video_path.exists() {
         anyhow::bail!("El archivo de video no existe: {}", video_path.display());
@@ -51,13 +50,12 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
     let video_path_str = video_path.to_string_lossy().to_string();
 
     // ------------------------------------------------------------------
-    // 1. Conectar a Wayland
+    // 1. Connect to Wayland
     // ------------------------------------------------------------------
 
     let conn = Connection::connect_to_env()
         .context("No se pudo conectar al servidor Wayland. ¿Está WAYLAND_DISPLAY seteado?")?;
 
-    // Obtener el puntero C al wl_display* para EGL.
     let wl_display_ptr = { conn.backend().display_ptr() as *mut c_void };
 
     let (globals, mut queue) =
@@ -74,11 +72,11 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
 
     let output: Option<_> = globals.bind(&qh, 1..=4, ()).ok();
     if output.is_none() {
-        warn!("No se detectó wl_output, el compositor asignará el monitor");
+        warn!("No wl_output detected, compositor will assign the monitor");
     }
 
     // ------------------------------------------------------------------
-    // 2. Estado inicial
+    // 2. Initial state
     // ------------------------------------------------------------------
 
     let mut app = App::new(compositor, layer_shell);
@@ -90,19 +88,21 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
         .context("Error en roundtrip inicial")?;
 
     if app.width == 0 || app.height == 0 {
-        warn!("Dimensiones del output no detectadas, usando 1920x1080 como fallback");
+        warn!("Output dimensions not detected, using 1920x1080 as fallback");
         app.width = 1920;
         app.height = 1080;
     }
 
     // ------------------------------------------------------------------
-    // 3. Crear layer-shell surface
+    // 3. Create layer-shell surface
     // ------------------------------------------------------------------
 
     app.create_surfaces(&qh);
 
+    // wait for surface config
     let mut configure_attempts = 0;
     while !app.configured && configure_attempts < 50 {
+        // returns upon receiving events
         queue
             .blocking_dispatch(&mut app)
             .context("Error esperando configure")?;
@@ -122,7 +122,7 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
     }
 
     // ------------------------------------------------------------------
-    // 4. Inicializar EGL/OpenGL
+    // 4. Initialize EGL/OpenGL
     // ------------------------------------------------------------------
 
     let width = app.width as i32;
@@ -134,20 +134,20 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
     };
 
     // ------------------------------------------------------------------
-    // 5. Inicializar libmpv
+    // 5. Initialize libmpv
     // ------------------------------------------------------------------
 
-    let mpv = init_mpv(&gpu_api)?;
+    let mpv = init_mpv()?;
 
     // ------------------------------------------------------------------
-    // 6. Crear mpv_render_context sobre el EGLContext activo
+    // 6. Create mpv_render_context on the active EGLContext
     // ------------------------------------------------------------------
 
     let render_ctx =
         unsafe { create_render_context(&mpv).context("Error creando mpv_render_context")? };
 
     // ------------------------------------------------------------------
-    // 7. Configurar update callback de mpv + mecanismo de wakeup
+    // 7. Set up mpv update callback + wakeup mechanism
     // ------------------------------------------------------------------
 
     let (ping, ping_source) = ping::make_ping().context("Error creando ping para wakeup")?;
@@ -168,7 +168,7 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
 
     app.mpv_update_state = Some(update_state_ptr);
 
-    // Guardar estado de renderizado y mpv en App.
+    // save rendering and mpv state in App
     let rs = RenderState {
         egl_display,
         egl_surface,
@@ -182,7 +182,7 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
     app.mpv = Some(mpv);
 
     // ------------------------------------------------------------------
-    // 8. Cargar video en mpv y esperar a que empiece la reproducción
+    // 8. Load video into mpv and wait for playback to start
     // ------------------------------------------------------------------
 
     app.mpv
@@ -191,9 +191,9 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
         .command("loadfile", &[video_path_str.as_str(), "replace"])
         .map_err(|e| anyhow::anyhow!("Error cargando video en mpv: {}", e))?;
 
-    info!("Video cargado, esperando reproducción...");
+    info!("Video loaded, waiting for playback...");
 
-    // Esperar a que mpv cargue el archivo antes de verificar hwdec.
+    // Wait for mpv to load the file before checking hwdec.
     let mut hwdec_checked = false;
     {
         let mpv_ref = app.mpv.as_mut().unwrap();
@@ -201,12 +201,12 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
         while Instant::now() < deadline {
             match mpv_ref.event_context_mut().wait_event(0.5) {
                 Some(Ok(libmpv2::events::Event::FileLoaded)) => {
-                    info!("Video cargado por mpv, verificando aceleración por hardware...");
+                    info!("Video loaded by mpv, checking hardware acceleration...");
                     hwdec_checked = true;
                     break;
                 }
                 Some(Ok(libmpv2::events::Event::EndFile(reason))) => {
-                    warn!("mpv: EndFile antes de cargar: {:?}", reason);
+                    warn!("mpv: EndFile before loading: {:?}", reason);
                     break;
                 }
                 Some(Ok(libmpv2::events::Event::Shutdown)) => {
@@ -214,7 +214,7 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
                 }
                 Some(Ok(_)) => {}
                 Some(Err(e)) => {
-                    warn!("Error en evento mpv durante carga: {}", fmt_mpv_error(&e));
+                    warn!("Error in mpv event during loading: {}", fmt_mpv_error(&e));
                     break;
                 }
                 None => {}
@@ -222,7 +222,7 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
         }
     }
 
-    // Verificar aceleración por hardware (ahora sí, después de FileLoaded).
+    // Check hardware acceleration (now after FileLoaded).
     if hwdec_checked {
         unsafe {
             let prop = b"hwdec-current\0";
@@ -236,21 +236,21 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
             if ret >= 0 {
                 if !msg.udata.string.is_null() {
                     let hw = std::ffi::CStr::from_ptr(msg.udata.string).to_string_lossy();
-                    info!("Aceleración por hardware activa: {}", hw);
+                    info!("Hardware acceleration active: {}", hw);
                     libc::free(msg.udata.string as *mut c_void);
                 } else {
-                    warn!("hwdec-current: (null) — decodificación por CPU. Considera instalar VAAPI o usar --gpu-api vulkan");
+                    warn!("hwdec-current: (null) — CPU decoding. Consider installing VAAPI for hardware acceleration");
                 }
             } else {
                 warn!(
-                    "No se pudo consultar hwdec-current (código {}). Decodificación por CPU.",
+                    "Could not query hwdec-current (code {}). CPU decoding.",
                     ret
                 );
             }
         }
     }
 
-    info!("Iniciando render loop...");
+    info!("Starting render loop...");
 
     Ok(BootstrapOutput {
         app,

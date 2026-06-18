@@ -34,10 +34,10 @@ impl App {
             .set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
         layer_surface.set_exclusive_zone(-1);
 
-        // Obtener el puntero C nativo al wl_surface*.
+        // Get the native C pointer to wl_surface*.
         //
-        // wayland_backend::ObjectId::as_ptr() devuelve el *mut wl_proxy nativo
-        // a través de la API pública y estable del sys backend.
+        // wayland_backend::ObjectId::as_ptr() returns the native *mut wl_proxy
+        // through the public and stable sys backend API.
         self.wl_surface_ptr = proxy_to_raw_ptr(&surface);
 
         surface.commit();
@@ -45,6 +45,6 @@ impl App {
         self.surface = Some(surface);
         self.layer_surface = Some(layer_surface);
 
-        info!("Layer surface creada, esperando configure del compositor...");
+        info!("Layer surface created, waiting for compositor configure...");
     }
 }

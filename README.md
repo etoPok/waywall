@@ -96,7 +96,6 @@ RUST_LOG=mpv_wallpaper=debug ./target/release/mpv-wallpaper video.mp4
 
 | Flag | Valores | Default | Notas |
 |------|---------|---------|-------|
-| `--gpu-api` | `opengl`, `vulkan`, `auto` | `auto` | Aceptado pero siempre se fuerza `opengl` internamente |
 | `-h, --help` | | | Muestra ayuda |
 | `<video_path>` | ruta de archivo | requerido | Validado que existe |
 
@@ -192,14 +191,9 @@ Este enfoque da control total sobre el rendering (shaders, filtros, etc.) y es l
 
 ## Limitaciones conocidas
 
-- **Un solo monitor**: no hay lógica multi-output. Se puede expandir
-  iterando sobre `wl_output` y creando una `layer_surface` por monitor.
+- **Un solo monitor**: no hay lógica multi-output.
 
 - **Sin pausa/skip**: no hay IPC ni controles de teclado por diseño.
-  Para control usa `mpvctl` o añade soporte mpv socket más adelante.
-
-- **`--gpu-api` ignorado**: la render API solo soporta OpenGL. El flag
-  `--gpu-api` se acepta pero siempre se fuerza `opengl` internamente.
 
 - **Resize no implementado**: los cambios de resolución del monitor no
   redimensionan `wl_egl_window`.
@@ -244,12 +238,3 @@ nvidia-smi
 ```bash
 RUST_LOG=debug cargo run -- video.mp4 2>&1 | head -50
 ```
-
-## Extensiones futuras (fuera del alcance actual)
-
-Si quieres expandir el proyecto:
-
-- **Multi-monitor**: crear una `ZwlrLayerSurfaceV1` por `WlOutput`
-- **Hot reload**: IPC via Unix socket + `mpv.command("loadfile", ...)`
-- **Config TOML**: añadir `toml` + `serde` para opciones
-- **Resize**: llamar `wl_egl_window_resize` en Configure events

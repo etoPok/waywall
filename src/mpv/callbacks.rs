@@ -9,7 +9,7 @@ pub static UPDATE_CALLBACK_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 pub extern "C" fn mpv_update_callback(ctx: *mut c_void) {
     let count = UPDATE_CALLBACK_COUNT.fetch_add(1, Ordering::SeqCst);
-    debug!("mpv_update_callback llamado {} veces", count + 1);
+    debug!("mpv_update_callback called {} times", count + 1);
 
     unsafe {
         let state = &*(ctx as *const MpvUpdateState);
@@ -18,5 +18,5 @@ pub extern "C" fn mpv_update_callback(ctx: *mut c_void) {
     }
 }
 
-/// Callback vacío para desregistrar el update callback de mpv en la limpieza.
+/// empty callback to unregister the mpv update callback during cleanup
 pub extern "C" fn noop_update_callback(_ctx: *mut c_void) {}

@@ -2,7 +2,7 @@ use anyhow::Result;
 use libmpv2::Mpv;
 use tracing::info;
 
-pub fn init_mpv(gpu_api: &str) -> Result<Mpv> {
+pub fn init_mpv() -> Result<Mpv> {
     let mpv = Mpv::with_initializer(|init| {
         init.set_property("terminal", "no")?;
         init.set_property("msg-level", "all=warn,vd=info")?;
@@ -19,21 +19,18 @@ pub fn init_mpv(gpu_api: &str) -> Result<Mpv> {
         init.set_property("input-vo-keyboard", false)?;
         init.set_property("input-cursor", false)?;
         init.set_property("vo", "libmpv")?;
-        // Render API (vo=libmpv) solo soporta OpenGL. Ignorar el --gpu-api del usuario.
+        // Render API (vo=libmpv) only supports OpenGL.
         init.set_property("gpu-api", "opengl")?;
-        // NOTA: gpu-context NO se setea aquí; con vo=libmpv el contexto lo provee
-        // la aplicación via mpv_render_context_create.
-        // display-resample requiere timing del compositor que vo=libmpv no provee
+        // NOTE: gpu-context is NOT set here; with vo=libmpv the context is provided
+        // by the application via mpv_render_context_create.
+        // display-resample requires compositor timing that vo=libmpv doesn't provide
         init.set_property("video-sync", "audio")?;
-        // framedrop=vo es UB con vo=libmpv
+        // framedrop=vo is UB with vo=libmpv
         init.set_property("framedrop", "no")?;
         Ok(())
     })
     .map_err(|e| anyhow::anyhow!("Error inicializando libmpv: {}", e))?;
 
-    info!(
-        "libmpv inicializado (gpu-api={}, modo render API, sin ventana propia)",
-        gpu_api
-    );
+    info!("libmpv initialized (gpu-api=opengl, render API mode, no window)");
     Ok(mpv)
 }

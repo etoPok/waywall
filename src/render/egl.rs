@@ -14,20 +14,21 @@ use crate::bindings::egl::{
 };
 use crate::bindings::wayland_egl::{wl_egl_window_create, wl_egl_window_destroy};
 
-/// Inicializa EGL/OpenGL sobre la wl_surface dada.
+/// Initializes EGL/OpenGL on the given wl_surface.
 ///
-/// Recibe:
-///   - wl_display_ptr: puntero al wl_display* (de Connection::backend().display_ptr())
-///   - wl_surface_ptr: puntero al wl_surface* (de proxy_to_raw_ptr)
-///   - width, height: dimensiones del output
+/// Receives:
+///   - wl_display_ptr: pointer to wl_display* (from Connection::backend().display_ptr())
+///   - wl_surface_ptr: pointer to wl_surface* (from proxy_to_raw_ptr)
+///   - width, height: output dimensions
 ///
-/// Devuelve: (egl_display, egl_surface, egl_context, egl_window)
+/// Returns: (egl_display, egl_surface, egl_context, egl_window)
 pub unsafe fn init_egl(
     wl_display_ptr: *mut c_void,
     wl_surface_ptr: *mut c_void,
     width: i32,
     height: i32,
 ) -> Result<(*mut c_void, *mut c_void, *mut c_void, *mut c_void)> {
+    // use client connection with the compositor
     let egl_display = eglGetDisplay(wl_display_ptr);
     if egl_display == EGL_NO_DISPLAY {
         bail!("eglGetDisplay falló");
@@ -38,7 +39,7 @@ pub unsafe fn init_egl(
     if eglInitialize(egl_display, &mut major, &mut minor) == 0 {
         bail!("eglInitialize falló");
     }
-    info!("EGL {}.{} inicializado", major, minor);
+    info!("EGL {}.{} initialized", major, minor);
 
     if eglBindAPI(EGL_OPENGL_API) == 0 {
         bail!("eglBindAPI(OPENGL) falló");
@@ -69,6 +70,7 @@ pub unsafe fn init_egl(
         bail!("eglChooseConfig falló o no encontró configuraciones válidas");
     }
 
+    // wrap native wayland surface in a structure for EGL
     let egl_window = wl_egl_window_create(wl_surface_ptr, width, height);
     if egl_window.is_null() {
         bail!("wl_egl_window_create falló");
@@ -98,6 +100,7 @@ pub unsafe fn init_egl(
         bail!("eglCreateContext falló (requiere OpenGL >= 3.3)");
     }
 
+    // bind context and surface to the execution thread
     if eglMakeCurrent(egl_display, egl_surface, egl_surface, egl_context) == 0 {
         eglDestroyContext(egl_display, egl_context);
         eglDestroySurface(egl_display, egl_surface);
@@ -105,9 +108,9 @@ pub unsafe fn init_egl(
         bail!("eglMakeCurrent falló");
     }
 
-    // Sin vsync forzado a nivel EGL; mpv gestiona su propio timing
+    // no vsync forced at EGL level; mpv manages its own timing
     eglSwapInterval(egl_display, 0);
 
-    info!("EGL inicializado correctamente ({}x{})", width, height);
+    info!("EGL initialized successfully ({}x{})", width, height);
     Ok((egl_display, egl_surface, egl_context, egl_window))
 }

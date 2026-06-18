@@ -33,40 +33,40 @@ pub struct App {
     pub loop_signal: Option<LoopSignal>,
     pub configured: bool,
 
-    /// Puntero al wl_surface nativo (para wl_egl_window_create).
-    /// Se obtiene a través de wayland_backend::sys.
+    /// Pointer to the native wl_surface (for wl_egl_window_create).
+    /// Obtained via wayland_backend::sys.
     pub wl_surface_ptr: *mut c_void,
 
-    /// Handle de la cola Wayland, necesario para solicitar frame callbacks.
+    /// Wayland queue handle, needed to request frame callbacks.
     pub qh: Option<QueueHandle<App>>,
 
-    /// Estado de renderizado EGL/mpv.
+    /// EGL/mpv render state.
     pub render_state: Option<RenderState>,
 
-    /// Instancia de mpv.
+    /// mpv instance.
     pub mpv: Option<Mpv>,
 
-    /// true cuando mpv tiene un frame nuevo listo para renderizar.
-    /// Puntero raw al MpvUpdateState boxeado; se libera en la limpieza.
+    /// true when mpv has a new frame ready to render.
+    /// Raw pointer to the boxed MpvUpdateState; freed on cleanup.
     pub mpv_update_state: Option<*mut MpvUpdateState>,
 
-    /// true cuando se ha solicitado un wl_callback de frame y aún no ha disparado.
+    /// true when a wl_callback frame has been requested and has not fired yet.
     pub frame_pending: bool,
 
-    /// Callback de frame de Wayland. DEBE mantenerse vivo; si se hace drop,
-    /// wayland-client envía wl_proxy_destroy y el compositor cancela el callback.
+    /// Wayland frame callback. MUST be kept alive; if dropped,
+    /// wayland-client sends wl_proxy_destroy and the compositor cancels the callback.
     pub wl_callback: Option<WlCallback>,
 
-    /// Primer frame ya renderizado (para no renderizar dos veces).
+    /// First frame already rendered (to avoid rendering twice).
     pub first_frame_rendered: bool,
 
-    /// Primer intento de render ya hecho (para renderizar el primer frame sin depender de mpv_update_callback).
+    /// First render attempt done (to render the first frame without depending on mpv_update_callback).
     pub first_render_attempted: bool,
 
-    /// Contador de frames renderizados (para stats periódicas).
+    /// Rendered frame counter (for periodic stats).
     pub frame_count: u64,
 
-    /// Instante del último log de stats.
+    /// Timestamp of the last stats log.
     pub last_stats_time: Option<Instant>,
 }
 

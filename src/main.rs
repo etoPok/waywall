@@ -1,17 +1,17 @@
 //! mpv-wallpaper
 //!
-//! Renderiza un video como fondo de pantalla animado en Wayland/Hyprland.
+//! Renders a video as an animated wallpaper on Wayland/Hyprland.
 //!
-//! Arquitectura correcta (Wayland-native, sin hacks X11):
-//!   1. Crea una wl_surface + zwlr_layer_surface_v1 (layer: BACKGROUND, fullscreen).
-//!   2. Crea un wl_egl_window sobre la surface.
-//!   3. Inicializa EGL: EGLDisplay → EGLContext → EGLSurface.
-//!   4. Inicializa mpv_render_context (MPV_RENDER_API_TYPE_OPENGL) — mpv NO abre ninguna ventana.
-//!   5. Loop: procesa eventos Wayland + mpv, renderiza frames con mpv_render_context_render,
-//!      presenta con eglSwapBuffers.
+//! Correct architecture (Wayland-native, no X11 hacks):
+//!   1. Creates a wl_surface + zwlr_layer_surface_v1 (layer: BACKGROUND, fullscreen).
+//!   2. Creates a wl_egl_window on the surface.
+//!   3. Initializes EGL: EGLDisplay → EGLContext → EGLSurface.
+//!   4. Initializes mpv_render_context (MPV_RENDER_API_TYPE_OPENGL) — mpv does NOT open any window.
+//!   5. Loop: processes Wayland + mpv events, renders frames with mpv_render_context_render,
+//!      presents with eglSwapBuffers.
 //!
-//! Uso:
-//!   mpv-wallpaper /ruta/al/video.mp4
+//! Usage:
+//!   mpv-wallpaper /path/to/video.mp4
 
 mod app;
 mod bindings;

@@ -31,13 +31,12 @@ pub fn run(
         .insert(event_loop.handle())
         .map_err(|e| anyhow::anyhow!("Error registrando fuente Wayland en event loop: {}", e))?;
 
-    // Insertar PingSource: despierta el event loop cuando mpv llama al update callback.
+    // Insert PingSource: wakes the event loop when mpv calls the update callback.
     event_loop
         .handle()
         .insert_source(ping_source, |(), &mut (), _| {})
         .map_err(|e| anyhow::anyhow!("Error registrando PingSource en event loop: {}", e))?;
 
-    // Timer para stats periódicas de rendimiento (cada 5 segundos).
     let stats_timer = Timer::from_duration(Duration::from_secs(5));
     event_loop
         .handle()
@@ -54,47 +53,48 @@ pub fn run(
                     0.0
                 };
 
-                // Consultar frame-drop del decoder.
+                // Query decoder frame-drop count.
                 if let Ok(val) = mpv.get_property::<i64>("decoder-frame-drop-count") {
                     if val > 0 {
                         warn!(
-                            "Stats: {:.1} fps, {} frames, decoder-drops: {}",
+                            "Stats: {:.1} fps, {} frames, decoder drops: {}",
                             fps, frames, val
                         );
                     } else {
-                        info!("Stats: {:.1} fps, {} frames, sin drops", fps, frames);
+                        info!("Stats: {:.1} fps, {} frames, no drops", fps, frames);
                     }
                 } else {
                     info!("Stats: {:.1} fps, {} frames", fps, frames);
                 }
 
-                // Consultar fps estimado del video.
+                // Query estimated video fps.
                 if let Ok(val) = mpv.get_property::<f64>("estimated-vf-fps") {
                     info!("  estimated-vf-fps: {:.2}", val);
                 }
             }
             app.frame_count = 0;
             app.last_stats_time = Some(Instant::now());
-            // Re-programar el timer para las próximas stats.
+            // reschedule timer
             calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(5))
         })
         .map_err(|e| anyhow::anyhow!("Error registrando stats timer: {}", e))?;
 
     app.last_stats_time = Some(Instant::now());
 
-    info!("Event loop iniciado (sin polling). Ctrl+C para salir.");
+    info!("Event loop started (no polling). Ctrl+C to exit.");
     unsafe { ctrlc_setup(loop_signal) };
 
-    // Se duerme indefinidamente hasta que mpv o Wayland despierten el loop.
-    // No hay temporizador periódico — consumo de CPU ≈ 0 cuando no hay frames.
+    // Sleeps indefinitely until mpv or Wayland wake the loop.
+    // No periodic timer — CPU usage ≈ 0 when there are no frames.
     event_loop
         .run(None, &mut app, |app| {
+            // are there mpv events that must be processed in response to Wayland events?
             if let Some(mpv) = &mut app.mpv {
                 process_mpv_events(mpv, &app.loop_signal);
             }
 
-            // Primer frame: solicitar frame callback ANTES de render para que
-            // eglSwapBuffers commitee la surface incluyendo el frame request.
+            // First frame: request frame callback BEFORE rendering so that
+            // eglSwapBuffers commits the surface including the frame request.
             if !app.first_render_attempted {
                 app.first_render_attempted = true;
                 if let Some(surface) = &app.surface {
@@ -111,10 +111,10 @@ pub fn run(
                 }
             }
 
-            // Cuando mpv tiene datos nuevos (mpv_update_callback), solicitar
-            // un frame de Wayland. El render REAL ocurre en Dispatch<WlCallback>
-            // (vsync), donde render_frame llama mpv_render_context_update que
-            // rearma el callback para el siguiente frame.
+            // When mpv has new data (mpv_update_callback), request
+            // a Wayland frame. The REAL render happens in Dispatch<WlCallback>
+            // (vsync), where render_frame calls mpv_render_context_update which
+            // rearms the callback for the next frame.
             let needs_render = app
                 .mpv_update_state
                 .map(|ptr| unsafe { (*ptr).needs_update.swap(false, Ordering::SeqCst) })
@@ -132,10 +132,10 @@ pub fn run(
         .context("Error en event loop")?;
 
     // ------------------------------------------------------------------
-    // Limpieza
+    // Cleanup
     // ------------------------------------------------------------------
 
-    info!("Saliendo limpiamente...");
+    info!("Exiting cleanly...");
 
     unsafe {
         mpv_render_context_set_update_callback(
@@ -145,7 +145,7 @@ pub fn run(
         );
     }
 
-    // Liberar el MpvUpdateState boxeado.
+    // free the boxed MpvUpdateState
     if let Some(state_ptr) = app.mpv_update_state.take() {
         unsafe { drop(Box::from_raw(state_ptr)) };
     }
@@ -157,6 +157,7 @@ pub fn run(
         drop(mpv);
     }
 
+    // free wayland objects
     if let Some(ls) = app.layer_surface.take() {
         ls.destroy();
     }
@@ -164,6 +165,6 @@ pub fn run(
         s.destroy();
     }
 
-    info!("Salida completa.");
+    info!("Clean exit.");
     Ok(())
 }

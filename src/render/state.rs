@@ -17,7 +17,7 @@ pub struct RenderState {
     pub height: i32,
 }
 
-// SAFETY: solo se accede desde el hilo principal
+// SAFETY: accessed only from the main thread
 unsafe impl Send for RenderState {}
 unsafe impl Sync for RenderState {}
 

@@ -18,7 +18,7 @@ pub unsafe fn ctrlc_setup(loop_signal: LoopSignal) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(50));
         if TERMINATE.load(Ordering::Relaxed) {
-            info!("Señal recibida, cerrando...");
+            info!("Signal received, shutting down...");
             loop_signal.stop();
             break;
         }
