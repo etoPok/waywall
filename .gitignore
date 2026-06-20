@@ -1,7 +1,4 @@
 target/*
 
-*.mp4
-*.txt
-
+.ignore
 LOG
-INFORME.md
