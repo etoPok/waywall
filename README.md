@@ -123,3 +123,6 @@ The compositor does not support layer-shell. Verify that `WAYLAND_DISPLAY` point
 echo $WAYLAND_DISPLAY
 ls /run/user/$(id -u)/
 ```
+
+## License
+This project is licensed under the GPLv3 License. See the [LICENSE](./LICENSE) file for details.
