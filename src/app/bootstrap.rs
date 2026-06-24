@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use calloop::ping;
 use tracing::{info, warn};
+use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::{globals::registry_queue_init, Connection};
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
@@ -21,7 +22,7 @@ use crate::render::mpv_render::create_render_context;
 use crate::render::state::RenderState;
 use crate::runtime::wakeup::MpvUpdateState;
 
-use super::state::App;
+use super::state::{App, Monitor};
 
 pub struct BootstrapOutput {
     pub app: App,
@@ -82,6 +83,19 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
     app.qh = Some(qh.clone());
     app.viewporter = viewporter;
 
+    // Bind wl_output objects from the initial global list.
+    // registry_queue_init already consumed the WlRegistry::Global events,
+    // so we must iterate the stored GlobalListContents to discover outputs.
+    let registry = globals.registry();
+    for global in globals.contents().clone_list() {
+        if global.interface == "wl_output" {
+            let output =
+                registry.bind::<WlOutput, _, _>(global.name, global.version.min(4), &qh, ());
+            app.monitors.push(Monitor::new(output));
+        }
+    }
+    info!("Detected {} output(s)", app.monitors.len());
+
     queue
         .roundtrip(&mut app)
         .context("Error in initial roundtrip")?;
@@ -90,7 +104,7 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
     // Create layer-shell surface
     // ------------------------------------------------------------------
 
-    for monitor in app.monitors.iter_mut() {
+    for (i, monitor) in app.monitors.iter_mut().enumerate() {
         if monitor.physical_width == 0 || monitor.physical_height == 0 {
             warn!("Output dimensions not detected, using 1920x1080 as fallback");
             monitor.physical_width = 1920;
@@ -103,8 +117,8 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
             app.viewporter.as_ref(),
             &qh,
             monitor,
+            i,
         );
-        info!("surface creada para monitor");
     }
 
     // wait for surface config

@@ -98,8 +98,6 @@ ffmpeg -i original.mp4 \
 
 ## Known limitations
 
-- **Single monitor**: no multi-output logic.
-
 - **Resize not implemented**: monitor resolution changes do not
   resize `wl_egl_window`.
 

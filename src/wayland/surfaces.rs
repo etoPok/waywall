@@ -15,6 +15,7 @@ impl App {
         viewporter: Option<&WpViewporter>,
         qh: &QueueHandle<App>,
         monitor: &mut Monitor,
+        monitor_index: usize,
     ) {
         let surface = compositor.create_surface(qh, ());
         let output = monitor.output.as_ref();
@@ -25,7 +26,7 @@ impl App {
             zwlr_layer_shell_v1::Layer::Background,
             "mpvwall".to_string(),
             qh,
-            (),
+            monitor_index,
         );
 
         layer_surface.set_anchor(
@@ -57,9 +58,12 @@ impl App {
         monitor.surface = Some(surface);
         monitor.layer_surface = Some(layer_surface);
 
-        info!(
-            "Layer surface created for monitor {:?}, waiting for compositor configure...",
-            monitor.output.as_ref().map(|o| o.id())
-        );
+        match &monitor.output {
+            Some(out) => info!(
+                "Layer surface created for monitor {}, waiting for compositor configure...",
+                out.id()
+            ),
+            None => info!("Layer surface created for monitor, waiting for compositor configure..."),
+        }
     }
 }

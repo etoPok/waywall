@@ -78,12 +78,12 @@ delegate_noop!(App: ignore ZwlrLayerShellV1);
 delegate_noop!(App: ignore WpViewporter);
 delegate_noop!(App: ignore WpViewport);
 
-impl Dispatch<ZwlrLayerSurfaceV1, ()> for App {
+impl Dispatch<ZwlrLayerSurfaceV1, usize> for App {
     fn event(
         state: &mut App,
         proxy: &ZwlrLayerSurfaceV1,
         event: zwlr_layer_surface_v1::Event,
-        _data: &(),
+        data: &usize,
         _conn: &Connection,
         _qh: &QueueHandle<App>,
     ) {
@@ -93,15 +93,11 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for App {
                 width,
                 height,
             } => {
-                info!("Configuration received: {}x{}", width, height);
-                if !state.configured {
-                    if let Some(monitor) = state
-                        .monitors
-                        .iter_mut()
-                        .find(|o| o.output.as_ref().is_some_and(|out| out.id() == proxy.id()))
-                    {
+                if let Some(monitor) = state.monitors.get_mut(*data) {
+                    if !state.configured {
                         monitor.logical_width = width;
                         monitor.logical_height = height;
+                        monitor.configured = true;
 
                         if let Some(vp) = &monitor.viewport {
                             vp.set_destination(width as i32, height as i32);
@@ -116,7 +112,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for App {
                             monitor.logical_height
                         );
 
-                        state.configured = state.monitors.iter().all(|monitor| monitor.configured);
+                        state.configured = state.monitors.iter().all(|m| m.configured);
                     }
                 }
 
