@@ -4,7 +4,6 @@ use crate::bindings::egl::{
     eglDestroyContext, eglDestroySurface, eglMakeCurrent, eglTerminate, EGL_NO_CONTEXT,
     EGL_NO_DISPLAY, EGL_NO_SURFACE,
 };
-use crate::bindings::mpv::{mpv_render_context, mpv_render_context_free};
 use crate::bindings::wayland_egl::{wl_egl_window_destroy, wl_egl_window_resize};
 
 pub struct RenderState {
@@ -12,7 +11,6 @@ pub struct RenderState {
     pub egl_surface: *mut c_void,
     pub egl_context: *mut c_void,
     pub egl_window: *mut c_void,
-    pub render_ctx: *mut mpv_render_context,
     pub width: i32,
     pub height: i32,
 }
@@ -24,9 +22,6 @@ unsafe impl Sync for RenderState {}
 impl Drop for RenderState {
     fn drop(&mut self) {
         unsafe {
-            if !self.render_ctx.is_null() {
-                mpv_render_context_free(self.render_ctx);
-            }
             eglMakeCurrent(
                 self.egl_display,
                 EGL_NO_SURFACE,

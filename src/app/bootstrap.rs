@@ -10,8 +10,7 @@ use wayland_client::{globals::registry_queue_init, Connection};
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
 use crate::bindings::mpv::{
-    mpv_get_property, mpv_node, mpv_render_context, mpv_render_context_set_update_callback,
-    MPV_FORMAT_STRING,
+    mpv_get_property, mpv_node, mpv_render_context_set_update_callback, MPV_FORMAT_STRING,
 };
 use crate::cli::args::Args;
 use crate::mpv::callbacks::mpv_update_callback;
@@ -29,7 +28,6 @@ pub struct BootstrapOutput {
     pub conn: Connection,
     pub queue: wayland_client::EventQueue<App>,
     pub ping_source: ping::PingSource,
-    pub render_ctx: *mut mpv_render_context,
 }
 
 pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
@@ -71,11 +69,6 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
         .bind(&qh, 1..=4, ())
         .context("Composior does not support zwlr_layer_shell_v1")?;
 
-    let output: Option<_> = globals.bind(&qh, 1..=4, ()).ok();
-    if output.is_none() {
-        warn!("No wl_output detected, compositor will assign the monitor");
-    }
-
     let viewporter: Option<WpViewporter> = globals.bind(&qh, 1..=1, ()).ok();
     if viewporter.is_none() {
         warn!("wl_viewporter not available, fallback to logical size for EGL");
@@ -86,7 +79,6 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
     // ------------------------------------------------------------------
 
     let mut app = App::new(compositor, layer_shell);
-    app.output = output;
     app.qh = Some(qh.clone());
     app.viewporter = viewporter;
 
@@ -94,17 +86,26 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
         .roundtrip(&mut app)
         .context("Error in initial roundtrip")?;
 
-    if app.width == 0 || app.height == 0 {
-        warn!("Output dimensions not detected, using 1920x1080 as fallback");
-        app.width = 1920;
-        app.height = 1080;
-    }
-
     // ------------------------------------------------------------------
     // Create layer-shell surface
     // ------------------------------------------------------------------
 
-    app.create_surfaces(&qh);
+    for monitor in app.monitors.iter_mut() {
+        if monitor.physical_width == 0 || monitor.physical_height == 0 {
+            warn!("Output dimensions not detected, using 1920x1080 as fallback");
+            monitor.physical_width = 1920;
+            monitor.physical_height = 1080;
+        }
+
+        App::create_surfaces(
+            &app.compositor,
+            &app.layer_shell,
+            app.viewporter.as_ref(),
+            &qh,
+            monitor,
+        );
+        info!("surface creada para monitor");
+    }
 
     // wait for surface config
     let mut configure_attempts = 0;
@@ -123,29 +124,42 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
         );
     }
 
-    let wl_surface_ptr = app.wl_surface_ptr;
-    if wl_surface_ptr.is_null() {
-        anyhow::bail!("Could not obtain the native pointer of the wl_surface");
-    }
-
     // ------------------------------------------------------------------
     // Initialize EGL/OpenGL
     // ------------------------------------------------------------------
 
-    let width = if app.width > 0 {
-        app.width
-    } else {
-        app.logical_width.max(1920)
-    } as i32;
-    let height = if app.height > 0 {
-        app.height
-    } else {
-        app.logical_height.max(1080)
-    } as i32;
+    for monitor in app.monitors.iter() {
+        if monitor.wl_surface_ptr.is_null() {
+            anyhow::bail!("Could not obtain the native pointer of the wl_surface");
+        }
 
-    let (egl_display, egl_surface, egl_context, egl_window) = unsafe {
-        init_egl(wl_display_ptr, wl_surface_ptr, width, height).context("Error initializing EGL")?
-    };
+        let wl_surface_ptr = monitor.wl_surface_ptr;
+
+        let width = if monitor.physical_width > 0 {
+            monitor.physical_width
+        } else {
+            monitor.logical_width.max(1920)
+        } as i32;
+        let height = if monitor.physical_height > 0 {
+            monitor.physical_height
+        } else {
+            monitor.logical_height.max(1080)
+        } as i32;
+
+        let (egl_display, egl_surface, egl_context, egl_window) = unsafe {
+            init_egl(wl_display_ptr, wl_surface_ptr, width, height)
+                .context("Error initializing EGL")?
+        };
+
+        app.render_states.push(RenderState {
+            egl_display,
+            egl_surface,
+            egl_context,
+            egl_window,
+            width,
+            height,
+        });
+    }
 
     // ------------------------------------------------------------------
     // Initialize libmpv
@@ -180,19 +194,8 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
         );
     }
 
+    app.mpv_render_ctx = render_ctx;
     app.mpv_update_state = Some(update_state_ptr);
-
-    // save rendering and mpv state in App
-    let rs = RenderState {
-        egl_display,
-        egl_surface,
-        egl_context,
-        egl_window,
-        render_ctx,
-        width,
-        height,
-    };
-    app.render_state = Some(rs);
     app.mpv = Some(mpv);
 
     // ------------------------------------------------------------------
@@ -271,6 +274,5 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
         conn,
         queue,
         ping_source,
-        render_ctx,
     })
 }

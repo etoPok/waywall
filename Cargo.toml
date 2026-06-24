@@ -5,7 +5,7 @@ edition = "2021"
 description = "Minimal animated wallpaper using libmpv + Wayland layer-shell"
 
 [[bin]]
-name = "mpv-wallpaper"
+name = "mpvwall"
 path = "src/main.rs"
 
 [dependencies]

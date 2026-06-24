@@ -5,7 +5,7 @@ use wayland_client::{
     protocol::{
         wl_compositor::WlCompositor,
         wl_output::{self, WlOutput},
-        wl_registry::WlRegistry,
+        wl_registry::{self, WlRegistry},
         wl_seat::WlSeat,
         wl_surface::WlSurface,
     },
@@ -20,36 +20,52 @@ use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
 };
 
-use crate::app::state::App;
+use crate::app::state::{App, Monitor};
 
 impl Dispatch<WlRegistry, GlobalListContents> for App {
     fn event(
-        _state: &mut App,
-        _proxy: &WlRegistry,
-        _event: <WlRegistry as Proxy>::Event,
+        state: &mut App,
+        proxy: &WlRegistry,
+        event: <WlRegistry as Proxy>::Event,
         _data: &GlobalListContents,
         _conn: &Connection,
-        _qh: &QueueHandle<App>,
+        qh: &QueueHandle<App>,
     ) {
+        match event {
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } if interface == "wl_output" => {
+                let output = proxy.bind::<WlOutput, _, _>(name, version, qh, ());
+                state.monitors.push(Monitor::new(output.clone()));
+            }
+            wl_registry::Event::GlobalRemove { .. } => {
+                // drop WlOutput
+            }
+            _ => {}
+        }
     }
 }
 
 impl Dispatch<WlOutput, ()> for App {
     fn event(
         state: &mut App,
-        _proxy: &WlOutput,
+        proxy: &WlOutput,
         event: wl_output::Event,
         _data: &(),
         _conn: &Connection,
         _qh: &QueueHandle<App>,
     ) {
         if let wl_output::Event::Mode { width, height, .. } = event {
-            if state.width == 0 {
-                info!("Output mode detected: {}x{}", width, height);
-                state.width = width as u32;
-                state.height = height as u32;
-                state.output_width = width as u32;
-                state.output_height = height as u32;
+            if let Some(monitor) = state
+                .monitors
+                .iter_mut()
+                .find(|o| o.output.as_ref().is_some_and(|out| out.id() == proxy.id()))
+            {
+                monitor.physical_width = width as u32;
+                monitor.physical_height = height as u32;
+                info!("Output {} detected: {}x{}", proxy.id(), width, height);
             }
         }
     }
@@ -79,29 +95,36 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for App {
             } => {
                 info!("Configuration received: {}x{}", width, height);
                 if !state.configured {
-                    state.logical_width = width;
-                    state.logical_height = height;
+                    if let Some(monitor) = state
+                        .monitors
+                        .iter_mut()
+                        .find(|o| o.output.as_ref().is_some_and(|out| out.id() == proxy.id()))
+                    {
+                        monitor.logical_width = width;
+                        monitor.logical_height = height;
 
-                    if let Some(vp) = &state.viewport {
-                        vp.set_destination(width as i32, height as i32);
-                        info!("Viewport destination set: {}x{}", width, height);
+                        if let Some(vp) = &monitor.viewport {
+                            vp.set_destination(width as i32, height as i32);
+                            info!("Viewport destination set: {}x{}", width, height);
+                        }
+
+                        info!(
+                            "Render target: ( output: {}x{}, logical: {}x{} )",
+                            monitor.physical_width,
+                            monitor.physical_height,
+                            monitor.logical_width,
+                            monitor.logical_height
+                        );
+
+                        state.configured = state.monitors.iter().all(|monitor| monitor.configured);
                     }
-
-                    state.configured = true;
-                    info!(
-                        "Render target: {}x{} ( output: {}x{}, logical: {}x{} )",
-                        state.width,
-                        state.height,
-                        state.output_width,
-                        state.output_height,
-                        state.logical_width,
-                        state.logical_height
-                    );
                 }
 
                 proxy.ack_configure(serial);
-                if let Some(surface) = &state.surface {
-                    surface.commit();
+                for monitor in state.monitors.iter() {
+                    if let Some(surface) = &monitor.surface {
+                        surface.commit();
+                    }
                 }
             }
             zwlr_layer_surface_v1::Event::Closed => {

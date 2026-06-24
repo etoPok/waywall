@@ -8,10 +8,11 @@ use tracing::{info, warn};
 use wayland_client::{Connection, EventQueue};
 
 use crate::app::state::App;
-use crate::bindings::mpv::{mpv_render_context, mpv_render_context_set_update_callback};
+use crate::bindings::egl::eglMakeCurrent;
+use crate::bindings::mpv::mpv_render_context_set_update_callback;
 use crate::mpv::callbacks::noop_update_callback;
 use crate::mpv::events::process_mpv_events;
-use crate::render::frame::render_frame;
+use crate::render::frame::{has_new_frame, render_frame};
 use crate::runtime::signals::ctrlc_setup;
 
 pub fn run(
@@ -19,7 +20,6 @@ pub fn run(
     conn: Connection,
     queue: EventQueue<App>,
     ping_source: ping::PingSource,
-    render_ctx: *mut mpv_render_context,
 ) -> anyhow::Result<()> {
     let mut event_loop: EventLoop<App> =
         EventLoop::try_new().context("Error creando event loop")?;
@@ -97,17 +97,28 @@ pub fn run(
             // eglSwapBuffers commits the surface including the frame request.
             if !app.first_render_attempted {
                 app.first_render_attempted = true;
-                if let Some(surface) = &app.surface {
-                    if let Some(qh) = &app.qh {
-                        app.wl_callback = Some(surface.frame(qh, ()));
-                        app.frame_pending = true;
+                for monitor in app.monitors.iter_mut() {
+                    if let Some(surface) = &monitor.surface {
+                        if let Some(qh) = &app.qh {
+                            monitor.wl_callback = Some(surface.frame(qh, ()));
+                        }
                     }
                 }
-                if let Some(rs) = &mut app.render_state {
-                    if unsafe { render_frame(rs) } {
-                        app.frame_count += 1;
+                app.pending_wl_callbacks = app.monitors.len();
+
+                let has_new_frame = unsafe { has_new_frame(app.mpv_render_ctx) };
+                unsafe {
+                    for rs in app.render_states.iter_mut() {
+                        eglMakeCurrent(
+                            rs.egl_display,
+                            rs.egl_surface,
+                            rs.egl_surface,
+                            rs.egl_context,
+                        );
+                        if render_frame(rs, app.mpv_render_ctx, has_new_frame) {
+                            app.frame_count += 1;
+                        }
                     }
-                    app.first_frame_rendered = true;
                 }
             }
 
@@ -120,13 +131,15 @@ pub fn run(
                 .map(|ptr| unsafe { (*ptr).needs_update.swap(false, Ordering::SeqCst) })
                 .unwrap_or(false);
 
-            if needs_render && !app.frame_pending {
-                if let Some(surface) = &app.surface {
-                    if let Some(qh) = &app.qh {
-                        app.wl_callback = Some(surface.frame(qh, ()));
-                        app.frame_pending = true;
+            if needs_render && app.pending_wl_callbacks == 0 {
+                for monitor in app.monitors.iter_mut() {
+                    if let Some(surface) = &monitor.surface {
+                        if let Some(qh) = &app.qh {
+                            monitor.wl_callback = Some(surface.frame(qh, ()));
+                        }
                     }
                 }
+                app.pending_wl_callbacks = app.monitors.len();
             }
         })
         .context("Error en event loop")?;
@@ -139,35 +152,13 @@ pub fn run(
 
     unsafe {
         mpv_render_context_set_update_callback(
-            render_ctx,
+            app.mpv_render_ctx,
             noop_update_callback,
             std::ptr::null_mut(),
         );
     }
 
-    // free the boxed MpvUpdateState
-    if let Some(state_ptr) = app.mpv_update_state.take() {
-        unsafe { drop(Box::from_raw(state_ptr)) };
-    }
-
-    if let Some(rs) = app.render_state.take() {
-        drop(rs);
-    }
-    if let Some(mpv) = app.mpv.take() {
-        drop(mpv);
-    }
-
-    // free wayland objects
-    if let Some(ls) = app.layer_surface.take() {
-        ls.destroy();
-    }
-    if let Some(s) = app.surface.take() {
-        s.destroy();
-    }
-
-    if let Some(vp) = app.viewport.take() {
-        vp.destroy();
-    }
+    drop(app);
 
     info!("Clean exit.");
     Ok(())
