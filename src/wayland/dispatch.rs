@@ -5,7 +5,7 @@ use wayland_client::{
     protocol::{
         wl_compositor::WlCompositor,
         wl_output::{self, WlOutput},
-        wl_registry::{self, WlRegistry},
+        wl_registry::WlRegistry,
         wl_seat::WlSeat,
         wl_surface::WlSurface,
     },
@@ -20,31 +20,17 @@ use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
 };
 
-use crate::app::state::{App, Monitor};
+use crate::app::state::App;
 
 impl Dispatch<WlRegistry, GlobalListContents> for App {
     fn event(
-        state: &mut App,
-        proxy: &WlRegistry,
-        event: <WlRegistry as Proxy>::Event,
+        _state: &mut App,
+        _proxy: &WlRegistry,
+        _event: <WlRegistry as Proxy>::Event,
         _data: &GlobalListContents,
         _conn: &Connection,
-        qh: &QueueHandle<App>,
+        _qh: &QueueHandle<App>,
     ) {
-        match event {
-            wl_registry::Event::Global {
-                name,
-                interface,
-                version,
-            } if interface == "wl_output" => {
-                let output = proxy.bind::<WlOutput, _, _>(name, version, qh, ());
-                state.monitors.push(Monitor::new(output.clone()));
-            }
-            wl_registry::Event::GlobalRemove { .. } => {
-                // drop WlOutput
-            }
-            _ => {}
-        }
     }
 }
 
@@ -57,15 +43,25 @@ impl Dispatch<WlOutput, ()> for App {
         _conn: &Connection,
         _qh: &QueueHandle<App>,
     ) {
-        if let wl_output::Event::Mode { width, height, .. } = event {
-            if let Some(monitor) = state
-                .monitors
-                .iter_mut()
-                .find(|o| o.output.as_ref().is_some_and(|out| out.id() == proxy.id()))
-            {
-                monitor.physical_width = width as u32;
-                monitor.physical_height = height as u32;
-                info!("Output {} detected: {}x{}", proxy.id(), width, height);
+        if let Some(monitor) = state
+            .monitors
+            .iter_mut()
+            .find(|o| o.output.as_ref().is_some_and(|out| out.id() == proxy.id()))
+        {
+            match event {
+                wl_output::Event::Mode { width, height, .. } => {
+                    monitor.physical_width = width as u32;
+                    monitor.physical_height = height as u32;
+                    info!("Output {} detected: {}x{}", proxy.id(), width, height);
+                }
+                wl_output::Event::Name { name } => {
+                    monitor.name = Some(name);
+                    info!(
+                        "Output {} detected",
+                        monitor.name.as_deref().unwrap_or("unknown")
+                    );
+                }
+                _ => {}
             }
         }
     }

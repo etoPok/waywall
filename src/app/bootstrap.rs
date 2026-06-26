@@ -100,6 +100,40 @@ pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
         .roundtrip(&mut app)
         .context("Error in initial roundtrip")?;
 
+    // validate that all passed output names exist among detected monitors
+    if !args.outputs.is_empty() {
+        let invalid_names: Vec<&String> = args
+            .outputs
+            .iter()
+            .filter(|out| {
+                !app.monitors
+                    .iter()
+                    .any(|m| m.name.as_deref().is_some_and(|name| name == *out))
+            })
+            .collect();
+
+        if !invalid_names.is_empty() {
+            anyhow::bail!(
+                "The following output names do not exist: {:?}",
+                invalid_names
+            );
+        }
+
+        app.monitors.retain(|m| {
+            m.name
+                .as_deref()
+                .is_some_and(|name| args.outputs.iter().any(|out| out == name))
+        });
+    }
+
+    if app.monitors.is_empty() {
+        anyhow::bail!(
+            "No outputs detected. Make sure output names match. \
+             Requested: {:?}",
+            args.outputs
+        );
+    }
+
     // ------------------------------------------------------------------
     // Create layer-shell surface
     // ------------------------------------------------------------------

@@ -22,6 +22,7 @@ use crate::render::state::RenderState;
 use crate::runtime::wakeup::MpvUpdateState;
 
 pub struct Monitor {
+    pub name: Option<String>,
     pub output: Option<WlOutput>,
     pub surface: Option<WlSurface>,
 
@@ -46,6 +47,7 @@ pub struct Monitor {
 impl Monitor {
     pub fn new(output: WlOutput) -> Self {
         Self {
+            name: None,
             output: Some(output),
             surface: None,
             wl_surface_ptr: ptr::null_mut(),
