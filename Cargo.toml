@@ -1,11 +1,11 @@
 [package]
-name = "mpvwall"
+name = "waywall"
 version = "0.1.0"
 edition = "2021"
 description = "Minimal animated wallpaper using FFmpeg + OpenGL + Wayland layer-shell"
 
 [[bin]]
-name = "mpvwall"
+name = "waywall"
 path = "src/main.rs"
 
 [dependencies]

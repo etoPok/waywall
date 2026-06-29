@@ -1,6 +1,6 @@
-# mpvwall
+# waywall
 
-mpvwall is a Wayland video wallpaper client for compositors supporting the wlr-layer-shell protocol, such as Hyprland and Sway.
+waywall is a Wayland video wallpaper client for compositors supporting the wlr-layer-shell protocol, such as Hyprland and Sway.
 
 <https://github.com/user-attachments/assets/99ecf992-db35-4fcb-811c-7cd1131fb6b8>
 
@@ -43,7 +43,7 @@ pkg-config --modversion mpv
 
 ```bash
 git clone <repo>
-cd mpvwall
+cd waywall
 cargo build --release
 ```
 
@@ -51,22 +51,22 @@ cargo build --release
 
 ```bash
 # Basic
-./target/release/mpvwall /path/to/video.mp4
+./target/release/waywall /path/to/video.mp4
 
 # Or with cargo
 cargo run --release -- /path/to/video.mp4
 
 # Specify a single output
-./target/release/mpvwall -o eDP-1 /path/to/video.mp4
+./target/release/waywall -o eDP-1 /path/to/video.mp4
 
 # Specify multiple outputs (repeated flag)
-./target/release/mpvwall -o eDP-1 -o DP-3 /path/to/video.mp4
+./target/release/waywall -o eDP-1 -o DP-3 /path/to/video.mp4
 
 # Specify multiple outputs (comma-separated)
-./target/release/mpvwall -o eDP-1,DP-3 /path/to/video.mp4
+./target/release/waywall -o eDP-1,DP-3 /path/to/video.mp4
 
 # With more verbose logging
-RUST_LOG=mpv_wallpaper=debug ./target/release/mpvwall video.mp4
+RUST_LOG=mpv_wallpaper=debug ./target/release/waywall video.mp4
 ```
 
 ### CLI Flags
@@ -83,7 +83,7 @@ Add to `~/.config/hypr/hyprland.conf`:
 
 ```conf
 # Start wallpaper when Hyprland boots
-exec-once = /path/to/mpvwall /path/to/video.mp4
+exec-once = /path/to/waywall /path/to/video.mp4
 ```
 
 ## Recommended video formats

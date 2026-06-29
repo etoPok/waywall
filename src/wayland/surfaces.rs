@@ -24,7 +24,7 @@ impl App {
             &surface,
             output,
             zwlr_layer_shell_v1::Layer::Background,
-            "mpvwall".to_string(),
+            "waywall".to_string(),
             qh,
             monitor_index,
         );

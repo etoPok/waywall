@@ -27,16 +27,16 @@ pub struct BootstrapOutput {
 pub fn bootstrap(args: Args) -> Result<BootstrapOutput> {
     let video_path_str = args.video_path;
 
-    info!("mpvwall starting with video: {}", video_path_str);
+    info!("waywall starting with video: {}", video_path_str);
 
     // Validate file
     let video_path = Path::new(&video_path_str);
     if !video_path.exists() {
-        anyhow::bail!("El archivo de video no existe: {}", video_path.display());
+        anyhow::bail!("Video file does not exist: {}", video_path.display());
     }
     let video_path = video_path
         .canonicalize()
-        .context("Error resolviendo la ruta del video")?;
+        .context("Error resolving video path")?;
     let video_path_str = video_path.to_string_lossy().to_string();
 
     // ------------------------------------------------------------------

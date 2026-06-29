@@ -17,7 +17,7 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "mpvwall=info".parse().unwrap()),
+                .unwrap_or_else(|_| "waywall=info".parse().unwrap()),
         )
         .init();
 
