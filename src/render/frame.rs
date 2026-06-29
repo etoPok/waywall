@@ -88,7 +88,7 @@ pub unsafe fn upload_frame(textures: &[GLuint], frame: *mut AVFrame) {
     let h = (*frame).height;
 
     if fmt == AVPixelFormat::AV_PIX_FMT_YUV420P as i32 {
-        for i in 0..3 {
+        for (i, &texture) in textures.iter().enumerate() {
             let data = (*frame).data[i];
             let stride = (*frame).linesize[i];
             if data.is_null() {
@@ -96,7 +96,7 @@ pub unsafe fn upload_frame(textures: &[GLuint], frame: *mut AVFrame) {
             }
             let (tw, th) = if i == 0 { (w, h) } else { (w / 2, h / 2) };
 
-            gl::BindTexture(gl::TEXTURE_2D, textures[i]);
+            gl::BindTexture(gl::TEXTURE_2D, texture);
             gl::PixelStorei(gl::UNPACK_ROW_LENGTH, stride);
             gl::TexSubImage2D(
                 gl::TEXTURE_2D,
@@ -156,11 +156,7 @@ pub unsafe fn upload_frame(textures: &[GLuint], frame: *mut AVFrame) {
     }
 }
 
-pub unsafe fn render_only(
-    rs: &mut RenderState,
-    shader: &Shader,
-    quad: &QuadGeometry,
-) {
+pub unsafe fn render_only(rs: &mut RenderState, shader: &Shader, quad: &QuadGeometry) {
     eglMakeCurrent(
         rs.egl_display,
         rs.egl_surface,

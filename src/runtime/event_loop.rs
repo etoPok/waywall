@@ -20,14 +20,14 @@ pub fn run(
     ping_source: PingSource,
 ) -> anyhow::Result<()> {
     let mut event_loop: EventLoop<App> =
-        EventLoop::try_new().context("Error creando event loop")?;
+        EventLoop::try_new().context("Error creating event loop")?;
 
     let loop_signal = event_loop.get_signal();
     app.loop_signal = Some(loop_signal.clone());
 
     WaylandSource::new(conn.clone(), queue)
         .insert(event_loop.handle())
-        .map_err(|e| anyhow::anyhow!("Error registrando fuente Wayland en event loop: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Error registering Wayland source in event loop: {}", e))?;
 
     // PingSource — fires once per decoder frame commit
     event_loop
@@ -35,7 +35,7 @@ pub fn run(
         .insert_source(ping_source, |(), _, app| {
             process_frame(app);
         })
-        .map_err(|e| anyhow::anyhow!("Error registrando decoder ping: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Error registering decoder ping: {}", e))?;
 
     // Stats timer (every 5 seconds)
     let stats_timer = Timer::from_duration(Duration::from_secs(5));
@@ -57,7 +57,7 @@ pub fn run(
             app.last_stats_time = Some(Instant::now());
             calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(5))
         })
-        .map_err(|e| anyhow::anyhow!("Error registrando stats timer: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Error registering stats timer: {}", e))?;
 
     app.last_stats_time = Some(Instant::now());
 
@@ -67,13 +67,7 @@ pub fn run(
 
     event_loop
         .run(None, &mut app, |_app| {})
-        .context("Error en event loop")?;
-
-    info!("Exiting cleanly...");
-
-    if let Some(ref decoder) = app.decoder {
-        decoder.stop();
-    }
+        .context("Error in event loop")?;
 
     drop(app);
 
@@ -151,7 +145,10 @@ fn process_frame(app: &mut App) {
 
             if rs.textures.is_empty() {
                 rs.textures = crate::render::frame::init_textures(rs, frame_ptr);
-                info!("Textures created for monitor ({} textures)", rs.textures.len());
+                info!(
+                    "Textures created for monitor ({} textures)",
+                    rs.textures.len()
+                );
             }
 
             crate::render::frame::upload_frame(&rs.textures, frame_ptr);

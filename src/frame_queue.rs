@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Condvar, Mutex};
 
@@ -9,8 +10,8 @@ const QUEUE_SIZE: usize = 3;
 
 pub struct FrameQueue {
     slots: [*mut AVFrame; QUEUE_SIZE],
-    write_idx: AtomicU32,
-    read_idx: AtomicU32,
+    write_idx: Cell<u32>,
+    read_idx: Cell<u32>,
     count: AtomicU32,
     mutex: Mutex<()>,
     not_empty: Condvar,
@@ -36,8 +37,8 @@ impl FrameQueue {
 
         Self {
             slots,
-            write_idx: AtomicU32::new(0),
-            read_idx: AtomicU32::new(0),
+            write_idx: Cell::new(0),
+            read_idx: Cell::new(0),
             count: AtomicU32::new(0),
             mutex: Mutex::new(()),
             not_empty: Condvar::new(),
@@ -52,12 +53,12 @@ impl FrameQueue {
             .wait_while(_guard, |_| self.count.load(Ordering::Acquire) >= QUEUE_SIZE as u32)
             .unwrap();
 
-        let idx = self.write_idx.load(Ordering::Acquire) as usize % QUEUE_SIZE;
+        let idx = self.write_idx.get() as usize % QUEUE_SIZE;
         self.slots[idx]
     }
 
     pub fn commit_write(&self) {
-        self.write_idx.fetch_add(1, Ordering::Release);
+        self.write_idx.set(self.write_idx.get() + 1);
         self.count.fetch_add(1, Ordering::Release);
         self.not_empty.notify_one();
     }
@@ -69,16 +70,16 @@ impl FrameQueue {
             .wait_while(_guard, |_| self.count.load(Ordering::Acquire) == 0)
             .unwrap();
 
-        let idx = self.read_idx.load(Ordering::Acquire) as usize % QUEUE_SIZE;
+        let idx = self.read_idx.get() as usize % QUEUE_SIZE;
         self.slots[idx]
     }
 
     pub fn commit_read(&self) {
-        let idx = self.read_idx.load(Ordering::Acquire) as usize % QUEUE_SIZE;
+        let idx = self.read_idx.get() as usize % QUEUE_SIZE;
         unsafe {
             av_frame_unref(self.slots[idx]);
         }
-        self.read_idx.fetch_add(1, Ordering::Release);
+        self.read_idx.set(self.read_idx.get() + 1);
         self.count.fetch_sub(1, Ordering::Release);
         self.not_full.notify_one();
     }
@@ -91,7 +92,7 @@ impl FrameQueue {
         if self.count.load(Ordering::Acquire) == 0 {
             return None;
         }
-        let idx = self.read_idx.load(Ordering::Acquire) as usize % QUEUE_SIZE;
+        let idx = self.read_idx.get() as usize % QUEUE_SIZE;
         Some(self.slots[idx])
     }
 
