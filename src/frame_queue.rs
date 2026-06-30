@@ -4,7 +4,7 @@ use std::sync::{Condvar, Mutex};
 
 use ffmpeg_sys_next::{av_frame_alloc, av_frame_free, av_frame_unref, AVFrame};
 
-const QUEUE_SIZE: usize = 3;
+const QUEUE_SIZE: usize = 20;
 
 pub struct FrameQueue {
     slots: [*mut AVFrame; QUEUE_SIZE],
@@ -22,10 +22,11 @@ unsafe impl Sync for FrameQueue {}
 #[allow(dead_code)]
 impl FrameQueue {
     pub fn new() -> Self {
-        let slots = unsafe { [av_frame_alloc(), av_frame_alloc(), av_frame_alloc()] };
-        assert!(!slots[0].is_null());
-        assert!(!slots[1].is_null());
-        assert!(!slots[2].is_null());
+        let mut slots = [std::ptr::null_mut(); QUEUE_SIZE];
+        for slot in slots.iter_mut() {
+            *slot = unsafe { av_frame_alloc() };
+            assert!(!slot.is_null());
+        }
 
         Self {
             slots,

@@ -21,16 +21,11 @@ pub struct Decoder {
 
 impl Decoder {
     pub fn start(path: &str, queue: Arc<FrameQueue>, notifier: Notifier) -> Result<Self> {
-        let path_owned = path.to_owned();
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = running.clone();
 
-        // ------------------------------------------------------------------
-        // Open file and get stream info on THIS thread (before spawning)
-        // ------------------------------------------------------------------
-
         let mut fmt_ctx: *mut AVFormatContext = std::ptr::null_mut();
-        let path_c = std::ffi::CString::new(path_owned.clone())?;
+        let path_c = std::ffi::CString::new(path)?;
 
         unsafe {
             let ret = avformat_open_input(
@@ -64,7 +59,8 @@ impl Decoder {
             for i in 0..nb_streams {
                 let stream = *(*fmt_ctx).streams.offset(i as isize);
                 let stream_ref = &*stream;
-                if stream_ref.codecpar.as_ref().unwrap().codec_type == AVMediaType::AVMEDIA_TYPE_VIDEO
+                if stream_ref.codecpar.as_ref().unwrap().codec_type
+                    == AVMediaType::AVMEDIA_TYPE_VIDEO
                 {
                     video_stream_idx = i as i32;
                     codec_params = stream_ref.codecpar;
@@ -116,10 +112,6 @@ impl Decoder {
             width, height, time_base_num, time_base_den, time_base, pixel_format as i32
         );
 
-        // ------------------------------------------------------------------
-        // Spawn decode thread
-        // ------------------------------------------------------------------
-
         let fmt_ctx_raw = fmt_ctx as usize;
         let codec_ctx_raw = codec_ctx as usize;
         let thread = thread::Builder::new()
@@ -127,7 +119,14 @@ impl Decoder {
             .spawn(move || {
                 let fmt_ctx = fmt_ctx_raw as *mut AVFormatContext;
                 let codec_ctx = codec_ctx_raw as *mut AVCodecContext;
-                decode_loop(fmt_ctx, codec_ctx, video_stream_idx, queue, notifier, &running_clone);
+                decode_loop(
+                    fmt_ctx,
+                    codec_ctx,
+                    video_stream_idx,
+                    queue,
+                    notifier,
+                    &running_clone,
+                );
             })
             .context("Failed to spawn decoder thread")?;
 
@@ -142,7 +141,7 @@ impl Decoder {
     }
 
     pub fn stop(&self) {
-        self.running.store(false, Ordering::SeqCst);
+        self.running.store(false, Ordering::Relaxed);
     }
 }
 
@@ -163,11 +162,22 @@ fn decode_loop(
         return;
     }
 
-    while running.load(Ordering::SeqCst) {
+    while running.load(Ordering::Relaxed) {
         let ret = unsafe { av_read_frame(fmt_ctx, packet) };
 
         if ret < 0 {
-            // EOF or error → seek to beginning for loop
+            // Before flushing at EOF, we must send a NULL packet to signal end-of-stream.
+            // Modern codecs (H.264, HEVC) use frame reordering (B-frames) and maintain an internal
+            // decoding delay. When we reach EOF, the decoder may have fully decoded frames buffered
+            // internally waiting for their presentation order, or partial data that needs future packets.
+            // Sending NULL tells the decoder "no more packets will arrive", allowing it to:
+            // 1. Release all buffered frames in presentation order
+            // 2. Discard incomplete data that can never be completed
+            // Without this step, avcodec_flush_buffers would destroy the decoder state and lose
+            // the final frames, causing visible stuttering or frame drops at the loop boundary.
+            unsafe { avcodec_send_packet(codec_ctx, packet) };
+            drain_decoder(&mut codec_ctx, &queue, &notifier);
+
             unsafe {
                 av_seek_frame(fmt_ctx, video_stream_idx, 0, AVSEEK_FLAG_BACKWARD);
                 avcodec_flush_buffers(codec_ctx);
@@ -182,24 +192,24 @@ fn decode_loop(
             continue;
         }
 
-        let send_ret = unsafe { avcodec_send_packet(codec_ctx, packet) };
-        unsafe { av_packet_unref(packet) };
-        if send_ret < 0 {
-            continue;
-        }
-
-        loop {
-            let slot = queue.get_write_slot();
-            let recv_ret = unsafe { avcodec_receive_frame(codec_ctx, slot) };
-            if recv_ret >= 0 {
-                queue.commit_write();
-                let _ = notifier.0.ping();
-            } else {
-                break;
-            }
-
-            if !running.load(Ordering::SeqCst) {
-                break;
+        let mut sent = false;
+        while !sent {
+            let send_ret = unsafe { avcodec_send_packet(codec_ctx, packet) };
+            match send_ret {
+                0 => {
+                    unsafe {
+                        av_packet_unref(packet);
+                    }
+                    drain_decoder(&mut codec_ctx, &queue, &notifier);
+                    sent = true;
+                }
+                ret if ret == AVERROR(EAGAIN) => {
+                    drain_decoder(&mut codec_ctx, &queue, &notifier);
+                }
+                _ => {
+                    unsafe { av_packet_unref(packet) };
+                    break;
+                }
             }
         }
     }
@@ -209,5 +219,18 @@ fn decode_loop(
         av_packet_free(&mut packet);
         avcodec_free_context(&mut codec_ctx);
         avformat_close_input(&mut fmt_ctx);
+    }
+}
+
+fn drain_decoder(codec_ctx: &mut *mut AVCodecContext, queue: &FrameQueue, notifier: &Notifier) {
+    loop {
+        let slot = queue.get_write_slot();
+        let recv_ret = unsafe { avcodec_receive_frame(*codec_ctx, slot) };
+        if recv_ret >= 0 {
+            queue.commit_write();
+            notifier.0.ping();
+        } else {
+            break;
+        }
     }
 }
