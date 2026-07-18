@@ -11,7 +11,7 @@ path = "src/main.rs"
 [dependencies]
 # Wayland client stack
 wayland-client = "0.31"
-wayland-protocols = { version = "0.31", features = ["client", "unstable"] }
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 wayland-protocols-wlr = { version = "0.2", features = ["client"] }
 wayland-backend = { version = "0.3", features = ["client_system"] }
 

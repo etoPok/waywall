@@ -3,6 +3,8 @@ use std::env;
 pub struct Args {
     pub video_path: String,
     pub outputs: Vec<String>,
+    pub use_vaapi: bool,
+    pub use_gl: bool,
 }
 
 fn print_usage(program: &str) {
@@ -11,6 +13,8 @@ fn print_usage(program: &str) {
     eprintln!("Options:");
     eprintln!("  -o, --output <name>  Output connector(s) to use (e.g. eDP-1, DP-3)");
     eprintln!("                       Can be specified multiple times or comma-separated");
+    eprintln!("  --vaapi              Enable hardware-accelerated decoding (VA-API)");
+    eprintln!("  --no-gl              Disable OpenGL/EGL rendering (default is false)");
     eprintln!("  -h, --help           Show this help");
     eprintln!();
     eprintln!("Example: {program} path/to/wallpaper.mp4");
@@ -23,6 +27,8 @@ pub fn parse() -> Args {
 
     let mut video_path: Option<String> = None;
     let mut outputs: Vec<String> = Vec::new();
+    let mut use_vaapi: bool = false;
+    let mut use_gl: bool = true;
 
     let mut i = 1;
     while i < args.len() {
@@ -43,6 +49,12 @@ pub fn parse() -> Args {
                         outputs.push(trimmed.to_string());
                     }
                 }
+            }
+            "--vaapi" => {
+                use_vaapi = true;
+            }
+            "--no-gl" => {
+                use_gl = false;
             }
             _ => {
                 if video_path.is_none() {
@@ -65,5 +77,10 @@ pub fn parse() -> Args {
         }
     };
 
-    Args { video_path, outputs }
+    Args {
+        video_path,
+        outputs,
+        use_vaapi,
+        use_gl,
+    }
 }

@@ -1,8 +1,9 @@
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use wayland_client::{
     delegate_noop,
     globals::GlobalListContents,
     protocol::{
+        wl_buffer::WlBuffer,
         wl_compositor::WlCompositor,
         wl_output::{self, WlOutput},
         wl_registry::WlRegistry,
@@ -16,11 +17,22 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_surface_v1::{self, ZwlrLayerSurfaceV1},
 };
 
-use wayland_protocols::wp::viewporter::client::{
-    wp_viewport::WpViewport, wp_viewporter::WpViewporter,
+use wayland_protocols::wp::{
+    linux_dmabuf::zv1::client::{
+        zwp_linux_buffer_params_v1, zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1,
+        zwp_linux_dmabuf_v1, zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
+    },
+    viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
 };
 
 use crate::app::state::App;
+
+delegate_noop!(App: ignore WlSurface);
+delegate_noop!(App: ignore WlCompositor);
+delegate_noop!(App: ignore WlSeat);
+delegate_noop!(App: ignore ZwlrLayerShellV1);
+delegate_noop!(App: ignore WpViewporter);
+delegate_noop!(App: ignore WpViewport);
 
 impl Dispatch<WlRegistry, GlobalListContents> for App {
     fn event(
@@ -67,13 +79,6 @@ impl Dispatch<WlOutput, ()> for App {
     }
 }
 
-delegate_noop!(App: ignore WlSurface);
-delegate_noop!(App: ignore WlCompositor);
-delegate_noop!(App: ignore WlSeat);
-delegate_noop!(App: ignore ZwlrLayerShellV1);
-delegate_noop!(App: ignore WpViewporter);
-delegate_noop!(App: ignore WpViewport);
-
 impl Dispatch<ZwlrLayerSurfaceV1, usize> for App {
     fn event(
         state: &mut App,
@@ -108,22 +113,95 @@ impl Dispatch<ZwlrLayerSurfaceV1, usize> for App {
                             monitor.logical_height
                         );
 
+                        if let Some(surface) = &monitor.surface {
+                            surface.commit();
+                        }
+
                         state.configured = state.monitors.iter().all(|m| m.configured);
                     }
                 }
 
                 proxy.ack_configure(serial);
-                for monitor in state.monitors.iter() {
-                    if let Some(surface) = &monitor.surface {
-                        surface.commit();
-                    }
-                }
             }
             zwlr_layer_surface_v1::Event::Closed => {
                 warn!("Layer surface closed by the compositor");
                 if let Some(signal) = &state.loop_signal {
                     signal.stop();
                 }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<WlBuffer, ()> for App {
+    fn event(
+        _state: &mut App,
+        _proxy: &WlBuffer,
+        _event: <WlBuffer as Proxy>::Event,
+        _date: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<App>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwpLinuxBufferParamsV1, ()> for App {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpLinuxBufferParamsV1,
+        event: zwp_linux_buffer_params_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_linux_buffer_params_v1::Event::Created { buffer } => {
+                info!("¡Buffer DMA-BUF creado con éxito! ID: {:?}", buffer.id());
+                // Guardar el buffer...
+            }
+            zwp_linux_buffer_params_v1::Event::Failed => {
+                // ¡AQUÍ TE ENTERAS DE QUE FALLÓ!
+                error!("¡El compositor RECHAZÓ la creación del buffer DMA-BUF!");
+                // Aquí deberías marcar el estado como inválido para no intentar hacer attach.
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwpLinuxDmabufV1, ()> for App {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpLinuxDmabufV1,
+        event: zwp_linux_dmabuf_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_linux_dmabuf_v1::Event::Format { format: _ } => {
+                // info!("🎨 Compositor supports format: {}", format);
+            }
+            // zwp_linux_dmabuf_v1::Event::Modifier {
+            //     format: _,
+            //     modifier_hi: _,
+            //     modifier_lo: _,
+            // } => {
+            //     info!(
+            //         "🎨 Compositor supports format {} with modifier_lo: {} and modifier_hi {}",
+            //         format, modifier_lo, modifier_hi
+            //     );
+            // }
+            zwp_linux_dmabuf_v1::Event::Modifier {
+                format,
+                modifier_hi,
+                modifier_lo,
+            } => {
+                info!(
+                    "🎨 Compositor supports format {} with modifier_lo: {} and modifier_hi {}",
+                    format, modifier_lo, modifier_hi
+                );
             }
             _ => {}
         }

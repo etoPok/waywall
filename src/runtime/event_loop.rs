@@ -185,3 +185,48 @@ fn process_frame(app: &mut App) {
     app.frame_queue.commit_read();
     app.frame_count += 1;
 }
+
+fn process_drm_frame(app: &mut App) {
+    let now = Instant::now();
+
+    let frame_ptr_opt = app.frame_queue.try_get_read_slot();
+    let frame_ptr = match frame_ptr_opt {
+        Some(ptr) => ptr,
+        None => return,
+    };
+
+    let pts = unsafe { (*frame_ptr).pts };
+
+    // Resume timing if first frame
+    if app.timing.is_none() {
+        if let Some(ref decoder) = app.decoder {
+            app.timing = Some(Timing::new(decoder.time_base));
+            info!("Timing initialized: time_base={}", decoder.time_base);
+        }
+    }
+
+    // Detect seek: non-monotonic PTS jump backwards → reset timing
+    if let Some(last_pts) = app.last_pts {
+        if pts < last_pts - 100 {
+            if let Some(ref decoder) = app.decoder {
+                app.timing = Some(Timing::new(decoder.time_base));
+                info!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
+            }
+        }
+    }
+    app.last_pts = Some(pts);
+
+    if let Some(ref timing) = app.timing {
+        if timing.should_drop(pts, now) {
+            app.frame_queue.commit_read();
+            warn!("Frame dropped (pts={})", pts);
+            return;
+        }
+
+        let render_time = timing.render_time(pts);
+        if now < render_time {
+            let sleep_dur = render_time - now;
+            std::thread::sleep(sleep_dur);
+        }
+    }
+}
