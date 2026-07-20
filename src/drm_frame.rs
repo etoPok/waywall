@@ -61,20 +61,20 @@ impl DrmFrame {
                         anyhow::bail!("plane object_index out of range");
                     }
                     let obj = &(*desc).objects[obj_idx];
+
                     info!(
                         "object[{}]: fd={}, size={}, modifier={:#x}",
                         obj_idx, obj.fd, obj.size, obj.format_modifier
                     );
+
                     // Compositor supports format 842094158 with modifier: 72057594037927935
                     // (hi: 16777215, lo: 4294967295)
                     planes.push(DrmPlane {
                         fd: obj.fd,
                         offset: plane.offset as u32,
                         stride: plane.pitch as u32,
-                        // modifier_lo: (obj.format_modifier & 0xFFFFFFFF) as u32,
-                        // modifier_hi: ((obj.format_modifier >> 32) & 0xFFFFFFFF) as u32,
-                        modifier_lo: 4294967295,
-                        modifier_hi: 16777215,
+                        modifier_lo: (obj.format_modifier & 0xFFFFFFFF) as u32,
+                        modifier_hi: ((obj.format_modifier >> 32) & 0xFFFFFFFF) as u32,
                         // not working
                         // modifier_lo: 0x00000000,
                         // modifier_hi: 0x00000000,
@@ -95,9 +95,10 @@ impl DrmFrame {
 
             let width = (*frame).width;
             let height = (*frame).height;
-            let format: u32 = 0x30313050;
+            // let format: u32 = 0x30313050;
+            let format: u32 = 0x3231564e;
             // let format: u32 = (*frame).format as u32;
-            info!("format frame {}", (*frame).format as u32);
+            // info!("format frame {}", (*frame).format as u32);
 
             info!(
                 "Mapped VAAPI frame to DRM_PRIME: {}x{} format {} planes {}",

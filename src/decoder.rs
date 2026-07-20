@@ -1,4 +1,3 @@
-use std::ffi::CString;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -472,7 +471,7 @@ fn init_hw_device(codec_ctx: *mut AVCodecContext) -> Result<*mut AVBufferRef> {
         let ret = av_hwdevice_ctx_create(
             &mut hw_device_ctx,
             AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
-            CString::new("/dev/dri/renderD129").unwrap().as_ptr(),
+            ptr::null(),
             ptr::null_mut(),
             0,
         );
@@ -760,12 +759,14 @@ pub fn vaapi_render_check(
                 break;
             }
         } else {
-            if unsafe { (*packet).stream_index } != video_stream_idx {
-                unsafe { av_packet_unref(packet) };
-                continue;
+            unsafe {
+                if (*packet).stream_index != video_stream_idx {
+                    av_packet_unref(packet);
+                    continue;
+                }
+                avcodec_send_packet(codec_ctx, packet);
+                av_packet_unref(packet);
             }
-            unsafe { avcodec_send_packet(codec_ctx, packet) };
-            unsafe { av_packet_unref(packet) };
         }
 
         let recv_ret = unsafe { avcodec_receive_frame(codec_ctx, frame) };
@@ -801,14 +802,14 @@ pub fn vaapi_render_check(
                 0,
             );
 
-            surface.damage_buffer(0, 0, drm_frame_ref.width, drm_frame_ref.height);
+            surface.damage_buffer(0, 0, drm_frame_ref.width, 1088);
 
             surface.commit();
 
             frame_drawn = true;
 
-            // IMPORTANTE: No hacemos av_frame_unref(frame) aquí todavía,
-            // porque DrmFrame/wl_buffer_state dependen de que la memoria de VAAPI siga viva.
+            // IMPORTANT: We don't call av_frame_unref(frame) here yet,
+            // because DrmFrame/wl_buffer_state depend on VAAPI memory still being alive.
         } else if recv_ret != AVERROR(EAGAIN) {
             error!("Error receiving frame: {}", recv_ret);
             break;
@@ -823,7 +824,7 @@ pub fn vaapi_render_check(
             av_buffer_unref(&mut hw_device_ctx);
             avformat_close_input(&mut fmt_ctx);
         }
-        anyhow::bail!("No se pudo decodificar ni un solo frame para mostrar.");
+        anyhow::bail!("Could not decode a single frame to display.");
     }
 
     if let Err(e) = app.conn.roundtrip() {
@@ -846,13 +847,13 @@ pub fn vaapi_render_check(
     let start_time = Instant::now();
     let wait_duration = Duration::from_secs(5);
 
-    info!("Frame enviado a Wayland. Esperando 5 segundos para visualizar...");
+    info!("Frame sent to Wayland. Waiting 5 seconds to visualize...");
     while start_time.elapsed() < wait_duration {
         std::thread::sleep(Duration::from_millis(50));
         let _ = app.conn.flush();
     }
 
-    info!("Tiempo de espera terminado. Limpiando recursos...");
+    info!("Wait time finished. Cleaning up resources...");
 
     unsafe {
         av_frame_free(&mut frame);

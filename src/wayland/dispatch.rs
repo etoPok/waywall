@@ -157,13 +157,11 @@ impl Dispatch<ZwpLinuxBufferParamsV1, ()> for App {
     ) {
         match event {
             zwp_linux_buffer_params_v1::Event::Created { buffer } => {
-                info!("¡Buffer DMA-BUF creado con éxito! ID: {:?}", buffer.id());
-                // Guardar el buffer...
+                info!("DMA-BUF buffer created successfully! ID: {:?}", buffer.id());
+                // Save the buffer...
             }
             zwp_linux_buffer_params_v1::Event::Failed => {
-                // ¡AQUÍ TE ENTERAS DE QUE FALLÓ!
-                error!("¡El compositor RECHAZÓ la creación del buffer DMA-BUF!");
-                // Aquí deberías marcar el estado como inválido para no intentar hacer attach.
+                error!("The compositor REJECTED the DMA-BUF buffer creation!");
             }
             _ => {}
         }
@@ -198,10 +196,12 @@ impl Dispatch<ZwpLinuxDmabufV1, ()> for App {
                 modifier_hi,
                 modifier_lo,
             } => {
-                info!(
-                    "🎨 Compositor supports format {} with modifier_lo: {} and modifier_hi {}",
-                    format, modifier_lo, modifier_hi
-                );
+                if format == 0x3231564e {
+                    info!(
+                        "🎨 Compositor supports format {} with modifier_lo: {} and modifier_hi {}",
+                        format, modifier_lo, modifier_hi
+                    );
+                }
             }
             _ => {}
         }
