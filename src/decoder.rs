@@ -1,3 +1,4 @@
+use std::ffi::CString;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -472,7 +473,7 @@ fn init_hw_device(codec_ctx: *mut AVCodecContext) -> Result<*mut AVBufferRef> {
         let ret = av_hwdevice_ctx_create(
             &mut hw_device_ctx,
             AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
-            ptr::null(),
+            CString::new("/dev/dri/renderD129").unwrap().as_ptr(),
             ptr::null_mut(),
             0,
         );
@@ -870,9 +871,9 @@ pub fn vaapi_render_check(
     }
 
     let start_time = Instant::now();
-    let wait_duration = Duration::from_secs(5);
+    let wait_duration = Duration::from_secs(3);
 
-    info!("Frame sent to Wayland. Waiting 5 seconds for display...");
+    info!("Frame sent to Wayland. Waiting 3 seconds for display...");
     while start_time.elapsed() < wait_duration {
         std::thread::sleep(Duration::from_millis(50));
         let _ = app.conn.flush();
