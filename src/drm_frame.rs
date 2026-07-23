@@ -1,3 +1,5 @@
+use std::ptr;
+
 use ffmpeg_sys_next::*;
 use tracing::info;
 
@@ -22,6 +24,22 @@ pub struct DrmFrame {
     pub format: u32,
     pub va_surface_id: u64,
     pub drm_frame: *mut AVFrame,
+
+    rgb_frame: *mut AVFrame,
+    rgb_frames_ctx: *mut AVBufferRef,
+}
+
+impl Drop for DrmFrame {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.rgb_frame.is_null() {
+                av_frame_free(&mut self.rgb_frame);
+            }
+            if !self.rgb_frames_ctx.is_null() {
+                av_buffer_unref(&mut self.rgb_frames_ctx);
+            }
+        }
+    }
 }
 
 impl DrmFrame {
@@ -66,18 +84,12 @@ impl DrmFrame {
                         "object[{}]: fd={}, size={}, modifier={:#x}",
                         obj_idx, obj.fd, obj.size, obj.format_modifier
                     );
-
-                    // Compositor supports format 842094158 with modifier: 72057594037927935
-                    // (hi: 16777215, lo: 4294967295)
                     planes.push(DrmPlane {
                         fd: obj.fd,
                         offset: plane.offset as u32,
                         stride: plane.pitch as u32,
                         modifier_lo: (obj.format_modifier & 0xFFFFFFFF) as u32,
                         modifier_hi: ((obj.format_modifier >> 32) & 0xFFFFFFFF) as u32,
-                        // not working
-                        // modifier_lo: 0x00000000,
-                        // modifier_hi: 0x00000000,
                         modifier: obj.format_modifier,
                     });
                 }
@@ -95,10 +107,12 @@ impl DrmFrame {
 
             let width = (*frame).width;
             let height = (*frame).height;
-            // let format: u32 = 0x30313050;
-            let format: u32 = 0x3231564e;
-            // let format: u32 = (*frame).format as u32;
-            // info!("format frame {}", (*frame).format as u32);
+            let format = (*desc).layers[0].format as u32;
+            info!(
+                "drm format {:#x} frame pix_fmt {}",
+                format,
+                (*frame).format as u32
+            );
 
             info!(
                 "Mapped VAAPI frame to DRM_PRIME: {}x{} format {} planes {}",
@@ -117,6 +131,131 @@ impl DrmFrame {
                 format,
                 va_surface_id,
                 drm_frame,
+                rgb_frame: ptr::null_mut(),
+                rgb_frames_ctx: ptr::null_mut(),
+            })
+        }
+    }
+
+    pub fn map_to_rgb(
+        frame: *mut AVFrame,
+        hw_device_ctx: *mut AVBufferRef,
+    ) -> Result<Self, anyhow::Error> {
+        unsafe {
+            let mut rgb_frames_ctx = av_hwframe_ctx_alloc(hw_device_ctx);
+            if rgb_frames_ctx.is_null() {
+                anyhow::bail!("av_hwframe_ctx_alloc failed");
+            }
+
+            let ctx = (*rgb_frames_ctx).data as *mut AVHWFramesContext;
+            (*ctx).format = AVPixelFormat::AV_PIX_FMT_VAAPI;
+            (*ctx).sw_format = AVPixelFormat::AV_PIX_FMT_BGRA;
+            (*ctx).width = (*frame).width;
+            (*ctx).height = (*frame).height;
+            (*ctx).initial_pool_size = 4;
+
+            let ret = av_hwframe_ctx_init(rgb_frames_ctx);
+            if ret < 0 {
+                av_buffer_unref(&mut rgb_frames_ctx);
+                anyhow::bail!("av_hwframe_ctx_init BGRA failed: {}", ret);
+            }
+
+            let mut rgb_frame = av_frame_alloc();
+            if rgb_frame.is_null() {
+                av_buffer_unref(&mut rgb_frames_ctx);
+                anyhow::bail!("av_frame_alloc failed");
+            }
+            (*rgb_frame).hw_frames_ctx = av_buffer_ref(rgb_frames_ctx);
+
+            info!("get buffer");
+            let ret = av_hwframe_get_buffer(rgb_frames_ctx, rgb_frame, 0);
+            if ret < 0 {
+                av_frame_free(&mut rgb_frame);
+                av_buffer_unref(&mut rgb_frames_ctx);
+                anyhow::bail!("av_hwframe_get_buffer BGRA failed: {}", ret);
+            }
+
+            info!("transfer data");
+            let ret = av_hwframe_transfer_data(rgb_frame, frame, 0);
+            if ret < 0 {
+                av_frame_free(&mut rgb_frame);
+                av_buffer_unref(&mut rgb_frames_ctx);
+                anyhow::bail!("av_hwframe_transfer_data failed: {}", ret);
+            }
+
+            let mut drm_frame = av_frame_alloc();
+            if drm_frame.is_null() {
+                av_frame_free(&mut rgb_frame);
+                av_buffer_unref(&mut rgb_frames_ctx);
+                anyhow::bail!("av_frame_alloc for DRM failed");
+            }
+            (*drm_frame).format = AVPixelFormat::AV_PIX_FMT_DRM_PRIME as i32;
+
+            info!("map");
+            let ret = av_hwframe_map(drm_frame, rgb_frame, AV_HWFRAME_MAP_READ as i32);
+            if ret < 0 {
+                av_frame_free(&mut drm_frame);
+                av_frame_free(&mut rgb_frame);
+                av_buffer_unref(&mut rgb_frames_ctx);
+                anyhow::bail!("av_hwframe_map BGRA->DRM failed: {}", ret);
+            }
+
+            let desc = (*drm_frame).data[0] as *mut AVDRMFrameDescriptor;
+            if desc.is_null() {
+                av_frame_free(&mut drm_frame);
+                av_frame_free(&mut rgb_frame);
+                av_buffer_unref(&mut rgb_frames_ctx);
+                anyhow::bail!("DRM descriptor is null");
+            }
+
+            let mut layers = Vec::new();
+            for layer_idx in 0..(*desc).nb_layers {
+                let layer = &(*desc).layers[layer_idx as usize];
+                let mut planes = Vec::new();
+
+                for plane_idx in 0..layer.nb_planes {
+                    let plane = &layer.planes[plane_idx as usize];
+                    let obj = &(*desc).objects[plane.object_index as usize];
+
+                    planes.push(DrmPlane {
+                        fd: obj.fd,
+                        offset: plane.offset as u32,
+                        stride: plane.pitch as u32,
+                        modifier_lo: (obj.format_modifier & 0xFFFFFFFF) as u32,
+                        modifier_hi: ((obj.format_modifier >> 32) & 0xFFFFFFFF) as u32,
+                        modifier: obj.format_modifier,
+                    });
+                }
+
+                layers.push(DrmLayer {
+                    format: layer.format as u32,
+                    planes,
+                });
+            }
+
+            let width = (*frame).width;
+            let height = (*frame).height;
+            let format = (*desc).layers[0].format as u32;
+            let va_surface_id = (*frame).data[3] as u64;
+
+            info!(
+                "Mapped BGRA: {}x{} format={:#x} planes={} stride={}",
+                width,
+                height,
+                format,
+                layers.len(),
+                layers[0].planes[0].stride
+            );
+
+            Ok(DrmFrame {
+                layers,
+                width,
+                height,
+                format,
+                va_surface_id,
+                drm_frame,
+                rgb_frame,
+                rgb_frames_ctx,
             })
         }
     }

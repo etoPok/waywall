@@ -157,11 +157,10 @@ impl Dispatch<ZwpLinuxBufferParamsV1, ()> for App {
     ) {
         match event {
             zwp_linux_buffer_params_v1::Event::Created { buffer } => {
-                info!("DMA-BUF buffer created successfully! ID: {:?}", buffer.id());
-                // Save the buffer...
+                info!("DMA-BUF buffer created successfully ID: {:?}", buffer.id());
             }
             zwp_linux_buffer_params_v1::Event::Failed => {
-                error!("The compositor REJECTED the DMA-BUF buffer creation!");
+                error!("The compositor REJECTED the DMA-BUF buffer creation");
             }
             _ => {}
         }
@@ -192,16 +191,14 @@ impl Dispatch<ZwpLinuxDmabufV1, ()> for App {
             //     );
             // }
             zwp_linux_dmabuf_v1::Event::Modifier {
-                format,
-                modifier_hi,
-                modifier_lo,
+                format: _,
+                modifier_hi: _,
+                modifier_lo: _,
             } => {
-                if format == 0x3231564e {
-                    info!(
-                        "🎨 Compositor supports format {} with modifier_lo: {} and modifier_hi {}",
-                        format, modifier_lo, modifier_hi
-                    );
-                }
+                // info!(
+                //     "🎨 Compositor supports format {} with modifier_lo: {} and modifier_hi {}",
+                //     format, modifier_lo, modifier_hi
+                // );
             }
             _ => {}
         }

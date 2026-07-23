@@ -14,6 +14,7 @@ use crate::app::state::App;
 use crate::drm_frame::DrmFrame;
 use crate::frame_queue::FrameQueue;
 use crate::notifier::Notifier;
+use crate::vaapi_converter::VaapiConverter;
 
 unsafe extern "C" fn vaapi_get_format(
     ctx: *mut AVCodecContext,
@@ -749,6 +750,8 @@ pub fn vaapi_render_check(
 
     let mut frame_drawn = false;
 
+    let mut converter: Option<VaapiConverter> = None;
+    let mut bgra_frame: Option<*mut AVFrame> = None;
     let mut drm_frame: Option<DrmFrame> = None;
     while !frame_drawn {
         let ret = unsafe { av_read_frame(fmt_ctx, packet) };
@@ -771,7 +774,26 @@ pub fn vaapi_render_check(
 
         let recv_ret = unsafe { avcodec_receive_frame(codec_ctx, frame) };
         if recv_ret >= 0 {
-            drm_frame = Some(DrmFrame::map(frame)?);
+            let w = unsafe { (*frame).width };
+            let h = unsafe { (*frame).height };
+            if converter.is_none() {
+                converter = Some(VaapiConverter::new(hw_device_ctx, w, h)?);
+            }
+            let converted = converter.as_mut().unwrap().convert(frame)?;
+            info!("Converted NV12 -> BGRA via scale_vaapi");
+            drm_frame = match DrmFrame::map(converted) {
+                Ok(df) => {
+                    bgra_frame = Some(converted);
+                    Some(df)
+                }
+                Err(e) => {
+                    let mut bf = converted;
+                    unsafe {
+                        av_frame_free(&mut bf);
+                    }
+                    return Err(e);
+                }
+            };
             let drm_frame_ref = drm_frame.as_ref().unwrap();
 
             let surface = app.monitors[0].surface.as_mut().unwrap().clone();
@@ -835,6 +857,9 @@ pub fn vaapi_render_check(
                 .is_alive()
         );
         unsafe {
+            if let Some(mut bf) = bgra_frame.take() {
+                av_frame_free(&mut bf);
+            }
             av_frame_free(&mut frame);
             av_packet_free(&mut packet);
             avcodec_free_context(&mut codec_ctx);
@@ -847,7 +872,7 @@ pub fn vaapi_render_check(
     let start_time = Instant::now();
     let wait_duration = Duration::from_secs(5);
 
-    info!("Frame sent to Wayland. Waiting 5 seconds to visualize...");
+    info!("Frame sent to Wayland. Waiting 5 seconds for display...");
     while start_time.elapsed() < wait_duration {
         std::thread::sleep(Duration::from_millis(50));
         let _ = app.conn.flush();
@@ -856,6 +881,9 @@ pub fn vaapi_render_check(
     info!("Wait time finished. Cleaning up resources...");
 
     unsafe {
+        if let Some(mut bf) = bgra_frame.take() {
+            av_frame_free(&mut bf);
+        }
         av_frame_free(&mut frame);
         av_packet_free(&mut packet);
         avcodec_free_context(&mut codec_ctx);

@@ -10,6 +10,7 @@ mod render;
 mod runtime;
 mod shader;
 mod timing;
+mod vaapi_converter;
 mod wayland;
 
 use anyhow::Result;
