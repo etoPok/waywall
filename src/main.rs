@@ -24,16 +24,13 @@ fn main() -> Result<()> {
         .init();
 
     let mut args = cli::args::parse();
-    let mut app = app::bootstrap::bootstrap_wayland(&mut args)?;
-    decoder::Decoder::start_vaapi_render_check(&mut app, &args.video_path, args.use_vaapi)
+    let bootstrap_output = app::bootstrap::bootstrap_drm_pipeline(&mut args)?;
 
-    // let output = app::bootstrap::bootstrap(&mut args)?;
-    //
-    // runtime::event_loop::run(
-    //     output.app,
-    //     output.conn,
-    //     output.queue,
-    //     output.ping_source,
-    //     output.error_ping_source,
-    // )
+    runtime::event_loop::run_drm(
+        bootstrap_output.app,
+        bootstrap_output.conn,
+        bootstrap_output.queue,
+        bootstrap_output.ping_source,
+        bootstrap_output.error_ping_source,
+    )
 }

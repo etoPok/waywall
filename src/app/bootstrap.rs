@@ -210,75 +210,7 @@ pub fn bootstrap(args: &mut Args) -> Result<BootstrapOutput> {
     })
 }
 
-fn initialize_gl_egl(app: &mut App, wl_display_ptr: *mut c_void) -> Result<(), anyhow::Error> {
-    for monitor in app.monitors.iter() {
-        if monitor.wl_surface_ptr.is_null() {
-            anyhow::bail!("Could not obtain the native pointer of the wl_surface");
-        }
-
-        let wl_surface_ptr = monitor.wl_surface_ptr;
-
-        let width = if monitor.physical_width > 0 {
-            monitor.physical_width
-        } else {
-            monitor.logical_width.max(1920)
-        } as i32;
-        let height = if monitor.physical_height > 0 {
-            monitor.physical_height
-        } else {
-            monitor.logical_height.max(1080)
-        } as i32;
-
-        let (egl_display, egl_surface, egl_context, egl_window) = unsafe {
-            init_egl(wl_display_ptr, wl_surface_ptr, width, height)
-                .context("Error initializing EGL")?
-        };
-
-        app.render_states.push(RenderState {
-            egl_display,
-            egl_surface,
-            egl_context,
-            egl_window,
-            width,
-            height,
-            textures: Vec::new(),
-        });
-    }
-
-    {
-        let last_rs = app.render_states.last().unwrap();
-        unsafe {
-            crate::render::egl::eglMakeCurrent(
-                last_rs.egl_display,
-                last_rs.egl_surface,
-                last_rs.egl_surface,
-                last_rs.egl_context,
-            );
-        }
-    }
-
-    gl::load_with(|name| {
-        let c_str = CString::new(name).unwrap();
-        unsafe { crate::render::egl::eglGetProcAddress(c_str.as_ptr()) as *const _ }
-    });
-
-    info!("OpenGL functions loaded successfully");
-
-    let shader_yuv = Shader::new_yuv420p();
-    let shader_nv12 = Shader::new_nv12();
-    info!("Shaders compiled (YUV420P + NV12)");
-
-    let quad = QuadGeometry::new();
-    info!("Quad geometry initialized");
-
-    app.shader_yuv = Some(shader_yuv);
-    app.shader_nv12 = Some(shader_nv12);
-    app.quad = Some(quad);
-
-    Ok(())
-}
-
-pub fn bootstrap_wayland(args: &mut Args) -> Result<App, anyhow::Error> {
+pub fn bootstrap_drm_pipeline(args: &mut Args) -> Result<BootstrapOutput> {
     info!("waywall starting with video: {}", &args.video_path);
 
     // Validate file
@@ -306,10 +238,10 @@ pub fn bootstrap_wayland(args: &mut Args) -> Result<App, anyhow::Error> {
         .bind(&qh, 1..=4, ())
         .context("Compositor does not support zwlr_layer_shell_v1")?;
 
-    // let viewporter: Option<WpViewporter> = globals.bind(&qh, 1..=1, ()).ok();
-    // if viewporter.is_none() {
-    //     warn!("wl_viewporter not available, fallback to logical size for EGL");
-    // }
+    let viewporter: Option<WpViewporter> = globals.bind(&qh, 1..=1, ()).ok();
+    if viewporter.is_none() {
+        warn!("wl_viewporter not available, fallback to logical size for EGL");
+    }
 
     let mut dmabuf: Option<ZwpLinuxDmabufV1> = None;
     if args.use_vaapi {
@@ -327,7 +259,7 @@ pub fn bootstrap_wayland(args: &mut Args) -> Result<App, anyhow::Error> {
 
     let mut app = App::new(conn.clone(), compositor, layer_shell);
     app.qh = Some(qh.clone());
-    app.viewporter = None;
+    app.viewporter = viewporter;
     app.dmabuf = dmabuf;
 
     let registry = globals.registry();
@@ -413,5 +345,111 @@ pub fn bootstrap_wayland(args: &mut Args) -> Result<App, anyhow::Error> {
         );
     }
 
-    Ok(app)
+    // ------------------------------------------------------------------
+    // Decoder PingSource
+    // ------------------------------------------------------------------
+
+    let (ping, ping_source) = ping::make_ping().context("Failed to create decoder wakeup ping")?;
+    let notifier = crate::notifier::Notifier(ping);
+
+    let (error_ping, error_ping_source) =
+        ping::make_ping().context("Failed to create decoder error ping")?;
+
+    // ------------------------------------------------------------------
+    // Start decoder
+    // ------------------------------------------------------------------
+
+    let decoder = Decoder::start(
+        &video_path.to_string_lossy().to_string(),
+        app.frame_queue.clone(),
+        notifier,
+        error_ping,
+        args.use_vaapi,
+    )
+    .context("Failed to start decoder")?;
+
+    info!(
+        "Decoder started: {}x{}, time_base={}",
+        decoder.width, decoder.height, decoder.time_base
+    );
+
+    app.decoder = Some(decoder);
+
+    info!("Starting render loop...");
+
+    Ok(BootstrapOutput {
+        app,
+        conn,
+        queue,
+        ping_source,
+        error_ping_source,
+    })
+}
+
+fn initialize_gl_egl(app: &mut App, wl_display_ptr: *mut c_void) -> Result<(), anyhow::Error> {
+    for monitor in app.monitors.iter() {
+        if monitor.wl_surface_ptr.is_null() {
+            anyhow::bail!("Could not obtain the native pointer of the wl_surface");
+        }
+
+        let wl_surface_ptr = monitor.wl_surface_ptr;
+
+        let width = if monitor.physical_width > 0 {
+            monitor.physical_width
+        } else {
+            monitor.logical_width.max(1920)
+        } as i32;
+        let height = if monitor.physical_height > 0 {
+            monitor.physical_height
+        } else {
+            monitor.logical_height.max(1080)
+        } as i32;
+
+        let (egl_display, egl_surface, egl_context, egl_window) = unsafe {
+            init_egl(wl_display_ptr, wl_surface_ptr, width, height)
+                .context("Error initializing EGL")?
+        };
+
+        app.render_states.push(RenderState {
+            egl_display,
+            egl_surface,
+            egl_context,
+            egl_window,
+            width,
+            height,
+            textures: Vec::new(),
+        });
+    }
+
+    {
+        let last_rs = app.render_states.last().unwrap();
+        unsafe {
+            crate::render::egl::eglMakeCurrent(
+                last_rs.egl_display,
+                last_rs.egl_surface,
+                last_rs.egl_surface,
+                last_rs.egl_context,
+            );
+        }
+    }
+
+    gl::load_with(|name| {
+        let c_str = CString::new(name).unwrap();
+        unsafe { crate::render::egl::eglGetProcAddress(c_str.as_ptr()) as *const _ }
+    });
+
+    info!("OpenGL functions loaded successfully");
+
+    let shader_yuv = Shader::new_yuv420p();
+    let shader_nv12 = Shader::new_nv12();
+    info!("Shaders compiled (YUV420P + NV12)");
+
+    let quad = QuadGeometry::new();
+    info!("Quad geometry initialized");
+
+    app.shader_yuv = Some(shader_yuv);
+    app.shader_nv12 = Some(shader_nv12);
+    app.quad = Some(quad);
+
+    Ok(())
 }

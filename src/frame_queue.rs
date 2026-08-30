@@ -4,7 +4,7 @@ use std::sync::{Condvar, Mutex};
 
 use ffmpeg_sys_next::{av_frame_alloc, av_frame_free, av_frame_unref, AVFrame};
 
-const QUEUE_SIZE: usize = 20;
+const QUEUE_SIZE: usize = 3;
 
 pub struct FrameQueue {
     slots: [*mut AVFrame; QUEUE_SIZE],
@@ -56,17 +56,6 @@ impl FrameQueue {
         self.write_idx.set(self.write_idx.get() + 1);
         self.count.fetch_add(1, Ordering::Release);
         self.not_empty.notify_one();
-    }
-
-    pub fn get_read_slot(&self) -> *mut AVFrame {
-        let _guard = self.mutex.lock().unwrap();
-        let _guard = self
-            .not_empty
-            .wait_while(_guard, |_| self.count.load(Ordering::Acquire) == 0)
-            .unwrap();
-
-        let idx = self.read_idx.get() as usize % QUEUE_SIZE;
-        self.slots[idx]
     }
 
     pub fn commit_read(&self) {

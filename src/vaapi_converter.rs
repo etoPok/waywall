@@ -3,6 +3,7 @@ use std::ptr;
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;
+use tracing::info;
 
 pub struct VaapiConverter {
     graph: *mut AVFilterGraph,
@@ -11,18 +12,14 @@ pub struct VaapiConverter {
 }
 
 impl VaapiConverter {
-    pub fn new(
-        hw_device_ctx: *mut AVBufferRef,
-        width: i32,
-        height: i32,
-    ) -> Result<Self> {
+    pub fn new(hw_device_ctx: *mut AVBufferRef, width: i32, height: i32) -> Result<Self> {
         unsafe {
             let mut graph = avfilter_graph_alloc();
             if graph.is_null() {
                 anyhow::bail!("avfilter_graph_alloc failed");
             }
 
-            let src_filter = avfilter_get_by_name(b"buffer\0".as_ptr() as *const i8);
+            let src_filter = avfilter_get_by_name(c"buffer".as_ptr());
             if src_filter.is_null() {
                 avfilter_graph_free(&mut graph);
                 anyhow::bail!("avfilter_get_by_name('buffer') failed");
@@ -30,15 +27,16 @@ impl VaapiConverter {
             let mut src_ctx: *mut AVFilterContext = ptr::null_mut();
 
             let src_args = CString::new(format!(
-                "video_size={}x{}:pix_fmt={}:time_base=1/30:pixel_aspect=1/1",
-                width, height,
+                "video_size={}x{}:pix_fmt={}:time_base=1/30:pixel_aspect=1/1:colorspace=bt709:range=tv",
+                width,
+                height,
                 AVPixelFormat::AV_PIX_FMT_NV12 as i32,
             ))?;
 
             let ret = avfilter_graph_create_filter(
                 &mut src_ctx,
                 src_filter,
-                b"in\0".as_ptr() as *const i8,
+                c"in".as_ptr(),
                 src_args.as_ptr(),
                 ptr::null_mut(),
                 graph,
@@ -53,7 +51,7 @@ impl VaapiConverter {
             (*in_ctx).format = AVPixelFormat::AV_PIX_FMT_VAAPI;
             (*in_ctx).sw_format = AVPixelFormat::AV_PIX_FMT_NV12;
             (*in_ctx).width = width;
-            (*in_ctx).height = height;
+            (*in_ctx).height = 1088;
             (*in_ctx).initial_pool_size = 4;
             av_hwframe_ctx_init(in_hw_frames);
 
@@ -69,19 +67,19 @@ impl VaapiConverter {
             av_free(params as *mut libc::c_void);
             av_buffer_unref(&mut in_hw_frames);
 
-            let scale_filter = avfilter_get_by_name(b"scale_vaapi\0".as_ptr() as *const i8);
+            let scale_filter = avfilter_get_by_name(c"scale_vaapi".as_ptr());
             if scale_filter.is_null() {
                 avfilter_graph_free(&mut graph);
                 anyhow::bail!("avfilter_get_by_name('scale_vaapi') failed");
             }
             let mut scale_ctx: *mut AVFilterContext = ptr::null_mut();
 
-            let scale_args = CString::new(format!("w={}:h={}:format=bgra", width, height))?;
+            let scale_args = CString::new(format!("w={}:h={}:format=bgra", width, 1088))?;
 
             let ret = avfilter_graph_create_filter(
                 &mut scale_ctx,
                 scale_filter,
-                b"scale\0".as_ptr() as *const i8,
+                c"scale".as_ptr(),
                 scale_args.as_ptr(),
                 ptr::null_mut(),
                 graph,
@@ -91,7 +89,7 @@ impl VaapiConverter {
                 anyhow::bail!("create scale_vaapi failed: {}", ret);
             }
 
-            let sink_filter = avfilter_get_by_name(b"buffersink\0".as_ptr() as *const i8);
+            let sink_filter = avfilter_get_by_name(c"buffersink".as_ptr());
             if sink_filter.is_null() {
                 avfilter_graph_free(&mut graph);
                 anyhow::bail!("avfilter_get_by_name('buffersink') failed");
@@ -101,7 +99,7 @@ impl VaapiConverter {
             let ret = avfilter_graph_create_filter(
                 &mut sink_ctx,
                 sink_filter,
-                b"out\0".as_ptr() as *const i8,
+                c"out".as_ptr(),
                 ptr::null(),
                 ptr::null_mut(),
                 graph,
@@ -117,7 +115,7 @@ impl VaapiConverter {
             ];
             av_opt_set_bin(
                 sink_ctx as *mut libc::c_void,
-                b"pix_fmts\0".as_ptr() as *const i8,
+                c"pix_fmts".as_ptr(),
                 pix_fmts.as_ptr() as *const u8,
                 (pix_fmts.len() * std::mem::size_of::<i32>()) as i32,
                 0,
@@ -149,24 +147,49 @@ impl VaapiConverter {
         }
     }
 
-    pub fn convert(&mut self, vaapi_frame: *mut AVFrame) -> Result<*mut AVFrame> {
+    pub fn convert(
+        &mut self,
+        vaapi_frame: *mut AVFrame,
+        bgra_frame: &mut *mut AVFrame,
+    ) -> Result<()> {
         unsafe {
-            let ret = av_buffersrc_add_frame(self.src_ctx, vaapi_frame);
+            if bgra_frame.is_null() {
+                *bgra_frame = av_frame_alloc();
+                if (*bgra_frame).is_null() {
+                    anyhow::bail!("av_frame_alloc failed for convert!");
+                }
+            }
+
+            info!(
+                "VaapiConverter::convert incoming w={} h={} fmt={} pts={} pkt_dts={} best_effort={}",
+                (*vaapi_frame).width,
+                (*vaapi_frame).height,
+                (*vaapi_frame).format,
+                (*vaapi_frame).pts,
+                (*vaapi_frame).pkt_dts,
+                (*vaapi_frame).best_effort_timestamp
+            );
+
+            let ret = av_buffersrc_add_frame_flags(
+                self.src_ctx,
+                vaapi_frame,
+                AV_BUFFERSRC_FLAG_KEEP_REF as i32,
+            );
+
             if ret < 0 {
                 anyhow::bail!("buffersrc_add_frame failed: {}", ret);
             }
 
-            let mut out_frame = av_frame_alloc();
-            let ret = av_buffersink_get_frame(self.sink_ctx, out_frame);
+            let ret = av_buffersink_get_frame(self.sink_ctx, *bgra_frame);
             if ret < 0 {
-                av_frame_free(&mut out_frame);
+                av_frame_free(bgra_frame);
                 if ret == AVERROR(EAGAIN) {
                     anyhow::bail!("converter needs more input");
                 }
                 anyhow::bail!("buffersink_get_frame failed: {}", ret);
             }
 
-            Ok(out_frame)
+            Ok(())
         }
     }
 }

@@ -3,7 +3,7 @@ use wayland_client::{
     delegate_noop,
     globals::GlobalListContents,
     protocol::{
-        wl_buffer::WlBuffer,
+        wl_buffer::{self, WlBuffer},
         wl_compositor::WlCompositor,
         wl_output::{self, WlOutput},
         wl_registry::WlRegistry,
@@ -136,13 +136,22 @@ impl Dispatch<ZwlrLayerSurfaceV1, usize> for App {
 
 impl Dispatch<WlBuffer, ()> for App {
     fn event(
-        _state: &mut App,
-        _proxy: &WlBuffer,
-        _event: <WlBuffer as Proxy>::Event,
+        state: &mut App,
+        proxy: &WlBuffer,
+        event: wl_buffer::Event,
         _date: &(),
         _conn: &Connection,
         _qh: &QueueHandle<App>,
     ) {
+        if let wl_buffer::Event::Release = event {
+            for wbs in state.wl_buffer_states.iter_mut().flatten() {
+                if wbs.wl_buffer.as_ref().is_some_and(|b| b.id() == proxy.id()) {
+                    info!("wl_buffer free");
+                    wbs.in_use = false;
+                    break;
+                }
+            }
+        }
     }
 }
 

@@ -1,18 +1,18 @@
-use std::collections::HashMap;
 use std::os::raw::c_void;
 use std::ptr;
 use std::sync::Arc;
 use std::time::Instant;
 
 use calloop::LoopSignal;
-use ffmpeg_sys_next::{av_frame_free, AVFrame};
+use ffmpeg_sys_next::{av_frame_free, av_frame_unref, AVFrame};
 use wayland_client::protocol::wl_buffer::WlBuffer;
 use wayland_client::protocol::{
-    wl_callback::WlCallback, wl_compositor::WlCompositor, wl_output::WlOutput,
-    wl_surface::WlSurface,
+    wl_compositor::WlCompositor, wl_output::WlOutput, wl_surface::WlSurface,
 };
 use wayland_client::{Connection, QueueHandle};
-use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_buffer_params_v1::Flags;
+use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_buffer_params_v1::{
+    Flags, ZwpLinuxBufferParamsV1,
+};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
 use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
@@ -27,6 +27,7 @@ use crate::frame_queue::FrameQueue;
 use crate::render::state::RenderState;
 use crate::shader::{QuadGeometry, Shader};
 use crate::timing::Timing;
+use crate::vaapi_converter::VaapiConverter;
 
 pub struct Monitor {
     pub name: Option<String>,
@@ -38,8 +39,6 @@ pub struct Monitor {
 
     pub layer_surface: Option<ZwlrLayerSurfaceV1>,
     pub viewport: Option<WpViewport>,
-
-    pub wl_callback: Option<WlCallback>,
 
     pub physical_width: u32,
     pub physical_height: u32,
@@ -57,7 +56,6 @@ impl Monitor {
             wl_surface_ptr: ptr::null_mut(),
             layer_surface: None,
             viewport: None,
-            wl_callback: None,
             physical_width: 0,
             physical_height: 0,
             logical_width: 0,
@@ -81,18 +79,26 @@ impl Drop for Monitor {
     }
 }
 
-pub struct WlBuffBerState {
-    pub wl_buffer: WlBuffer,
+pub struct WlBufferState {
+    pub wl_buffer: Option<WlBuffer>,
+    pub bgra_frame: *mut AVFrame,
     pub drm_frame: *mut AVFrame,
-    pub va_surface_id: u64,
-    pub in_use_by_compositor: bool,
+    pub drm_frame_wrapper: DrmFrame,
+    pub params: Option<ZwpLinuxBufferParamsV1>,
+    pub in_use: bool,
 }
 
-impl Drop for WlBuffBerState {
+impl Drop for WlBufferState {
     fn drop(&mut self) {
-        if !self.drm_frame.is_null() {
-            unsafe {
+        unsafe {
+            if !self.drm_frame.is_null() {
                 av_frame_free(&mut self.drm_frame);
+            }
+            if !self.bgra_frame.is_null() {
+                av_frame_free(&mut self.bgra_frame);
+            }
+            if let Some(p) = &mut self.params {
+                p.destroy();
             }
         }
     }
@@ -106,7 +112,8 @@ pub struct App {
 
     // DMA-BUF
     pub dmabuf: Option<ZwpLinuxDmabufV1>,
-    wl_buffer_states: HashMap<u64, WlBuffBerState>,
+    pub wl_buffer_states: [Option<WlBufferState>; 3],
+    pub converter: Option<VaapiConverter>,
 
     pub monitors: Vec<Monitor>,
     pub loop_signal: Option<LoopSignal>,
@@ -142,7 +149,8 @@ impl App {
             layer_shell,
             viewporter: None,
             dmabuf: None,
-            wl_buffer_states: HashMap::new(),
+            wl_buffer_states: std::array::from_fn(|_| None),
+            converter: None,
             monitors: Vec::new(),
             loop_signal: None,
             configured: false,
@@ -160,54 +168,163 @@ impl App {
         }
     }
 
-    pub fn get_or_create_wl_buffer_state(&mut self, drm_frame: &DrmFrame) -> &WlBuffBerState {
-        if self.wl_buffer_states.contains_key(&drm_frame.va_surface_id) {
-            return self.wl_buffer_states.get(&drm_frame.va_surface_id).unwrap();
-        }
+    pub fn acquire_or_create_buffer(
+        &mut self,
+        vaapi_frame: *mut AVFrame,
+    ) -> anyhow::Result<Option<&WlBufferState>> {
+        let reusable_idx = self
+            .wl_buffer_states
+            .iter()
+            .position(|s| s.as_ref().is_some_and(|wbs| !wbs.in_use));
 
-        let paramas = self
-            .dmabuf
-            .as_ref()
-            .unwrap()
-            .create_params(self.qh.as_ref().unwrap(), ());
+        if let Some(idx) = reusable_idx {
+            let new_wrapper = {
+                let converter = self
+                    .converter
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("VaapiConverter not initialized"))?;
+                let wbs = self.wl_buffer_states[idx].as_mut().unwrap();
 
-        let mut plane_idx = 0u32;
-        for layer in drm_frame.layers.iter() {
-            for plane in layer.planes.iter() {
-                let borrowed_fd = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(plane.fd) };
-                paramas.add(
-                    borrowed_fd,
-                    plane_idx,
-                    plane.offset,
-                    plane.stride,
-                    plane.modifier_hi,
-                    plane.modifier_lo,
-                );
-                plane_idx += 1;
+                unsafe {
+                    if !wbs.bgra_frame.is_null() {
+                        av_frame_unref(wbs.bgra_frame);
+                    }
+                    if !wbs.drm_frame.is_null() {
+                        av_frame_unref(wbs.drm_frame);
+                    }
+                }
+
+                converter
+                    .convert(vaapi_frame, &mut wbs.bgra_frame)
+                    .map_err(|e| anyhow::anyhow!("VaapiConvert reuse failed: {e:#}"))?;
+
+                DrmFrame::map(wbs.bgra_frame, &mut wbs.drm_frame).map_err(|e| {
+                    unsafe {
+                        av_frame_free(&mut wbs.bgra_frame);
+                    }
+                    anyhow::anyhow!("Drm map reuse failed: {e:#}")
+                })?
+            };
+
+            {
+                let wbs = self.wl_buffer_states[idx].as_mut().unwrap();
+                if let Some(old_buf) = wbs.wl_buffer.take() {
+                    old_buf.destroy();
+                }
+                if let Some(old_params) = wbs.params.take() {
+                    old_params.destroy();
+                }
             }
+
+            let wbs = self.wl_buffer_states[idx].as_mut().unwrap();
+            wbs.drm_frame_wrapper = new_wrapper;
+
+            let params = self
+                .dmabuf
+                .as_ref()
+                .unwrap()
+                .create_params(self.qh.as_ref().unwrap(), ());
+
+            let mut plane_idx = 0u32;
+            for layer in wbs.drm_frame_wrapper.layers.iter() {
+                for plane in layer.planes.iter() {
+                    let borrowed_fd =
+                        unsafe { std::os::unix::io::BorrowedFd::borrow_raw(plane.fd) };
+                    params.add(
+                        borrowed_fd,
+                        plane_idx,
+                        plane.offset,
+                        plane.stride,
+                        plane.modifier_hi,
+                        plane.modifier_lo,
+                    );
+                    plane_idx += 1;
+                }
+            }
+
+            let wl_buffer = params.create_immed(
+                wbs.drm_frame_wrapper.width,
+                1088,
+                wbs.drm_frame_wrapper.format,
+                Flags::empty(),
+                self.qh.as_ref().unwrap(),
+                (),
+            );
+
+            wbs.wl_buffer = Some(wl_buffer);
+            wbs.params = Some(params);
+            wbs.in_use = true;
+            return Ok(self.wl_buffer_states[idx].as_ref());
         }
 
-        let wl_buffer = paramas.create_immed(
-            drm_frame.width,
-            1088,
-            drm_frame.format,
-            Flags::empty(),
-            self.qh.as_ref().unwrap(),
-            (),
-        );
+        let free_idx = self.wl_buffer_states.iter().position(|s| s.is_none());
+        if let Some(idx) = free_idx {
+            let converter = self
+                .converter
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("VaapiConverter not initialized"))?;
 
-        // paramas.destroy();
+            let mut bgra_frame: *mut AVFrame = std::ptr::null_mut();
+            converter
+                .convert(vaapi_frame, &mut bgra_frame)
+                .map_err(|e| anyhow::anyhow!("VaapiConvert alloc failed: {e:#}"))?;
 
-        let wl_buffer_state = WlBuffBerState {
-            wl_buffer,
-            drm_frame: drm_frame.drm_frame,
-            va_surface_id: drm_frame.va_surface_id,
-            in_use_by_compositor: false,
-        };
-        self.wl_buffer_states
-            .insert(drm_frame.va_surface_id, wl_buffer_state);
+            let mut drm_frame: *mut AVFrame = std::ptr::null_mut();
+            let drm_wrapper = match DrmFrame::map(bgra_frame, &mut drm_frame) {
+                Ok(v) => v,
+                Err(e) => {
+                    unsafe {
+                        ffmpeg_sys_next::av_frame_free(&mut bgra_frame);
+                    }
+                    return Err(anyhow::anyhow!("Drm map alloc failed: {e:#}"));
+                }
+            };
 
-        self.wl_buffer_states.get(&drm_frame.va_surface_id).unwrap()
+            let params = self
+                .dmabuf
+                .as_ref()
+                .unwrap()
+                .create_params(self.qh.as_ref().unwrap(), ());
+            let mut plane_idx = 0u32;
+
+            for layer in drm_wrapper.layers.iter() {
+                for plane in layer.planes.iter() {
+                    let borrowed_fd =
+                        unsafe { std::os::unix::io::BorrowedFd::borrow_raw(plane.fd) };
+                    params.add(
+                        borrowed_fd,
+                        plane_idx,
+                        plane.offset,
+                        plane.stride,
+                        plane.modifier_hi,
+                        plane.modifier_lo,
+                    );
+                    plane_idx += 1;
+                }
+            }
+
+            let wl_buffer = params.create_immed(
+                drm_wrapper.width,
+                1088,
+                drm_wrapper.format,
+                Flags::empty(),
+                self.qh.as_ref().unwrap(),
+                (),
+            );
+
+            self.wl_buffer_states[idx] = Some(WlBufferState {
+                wl_buffer: Some(wl_buffer),
+                params: Some(params),
+                in_use: true,
+                drm_frame_wrapper: drm_wrapper,
+                drm_frame,
+                bgra_frame,
+            });
+
+            return Ok(self.wl_buffer_states[idx].as_ref());
+        }
+
+        Ok(None)
     }
 }
 
