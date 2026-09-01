@@ -24,7 +24,28 @@ pub struct DrmFrame {
 }
 
 impl DrmFrame {
-    pub fn map(frame: *mut AVFrame, drm_frame: &mut *mut AVFrame) -> Result<Self, anyhow::Error> {
+    /// Maps a VAAPI `AVFrame` to a `DRM_PRIME` frame and extracts its descriptor.
+    ///
+    /// # Safety
+    /// - `frame` must be a valid, non-null `*mut AVFrame` obtained from `av_frame_alloc`
+    ///   (or `FrameQueue`) and must remain valid for the duration of the call. Its
+    ///   `width`, `height`, `format` and `data[3]` (VAAPI `VASurfaceID`) must be
+    ///   initialized and not concurrently freed.
+    /// - `drm_frame` must be a valid `&mut *mut AVFrame`. It may be null (a new
+    ///   frame will be allocated with `av_frame_alloc`) or point to a valid
+    ///   `AVFrame`. On success the caller owns the `*mut AVFrame` stored in
+    ///   `*drm_frame` and must free it with `av_frame_free`; on failure it is
+    ///   freed internally and set to null.
+    /// - Both frames must not be accessed concurrently from other threads during
+    ///   the call. The returned `DrmFrame` borrows file descriptors from
+    ///   `AVDRMFrameDescriptor.objects[].fd` which remain valid while `*drm_frame`
+    ///   is alive.
+    /// - Caller must ensure `av_hwframe_map` and `AVDRMFrameDescriptor` layout
+    ///   match the linked `ffmpeg`/`libva` version.
+    pub unsafe fn map(
+        frame: *mut AVFrame,
+        drm_frame: &mut *mut AVFrame,
+    ) -> Result<Self, anyhow::Error> {
         unsafe {
             if drm_frame.is_null() {
                 *drm_frame = av_frame_alloc();

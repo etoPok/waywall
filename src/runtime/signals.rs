@@ -6,6 +6,7 @@ use tracing::info;
 
 pub static TERMINATE: AtomicBool = AtomicBool::new(false);
 
+#[allow(clippy::missing_safety_doc)]
 pub unsafe fn ctrlc_setup(loop_signal: LoopSignal) {
     extern "C" fn handle_signal(_sig: libc::c_int) {
         TERMINATE.store(true, Ordering::Relaxed);

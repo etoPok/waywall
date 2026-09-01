@@ -6,6 +6,7 @@ use crate::render::egl::{eglMakeCurrent, eglSwapBuffers};
 use crate::render::state::RenderState;
 use crate::shader::{QuadGeometry, Shader};
 
+#[allow(clippy::missing_safety_doc)]
 pub unsafe fn init_textures(_rs: &RenderState, frame: *mut AVFrame) -> Vec<GLuint> {
     let fmt = (*frame).format;
     let w = (*frame).width;
@@ -82,6 +83,7 @@ pub unsafe fn init_textures(_rs: &RenderState, frame: *mut AVFrame) -> Vec<GLuin
     }
 }
 
+#[allow(clippy::missing_safety_doc)]
 pub unsafe fn upload_frame(textures: &[GLuint], frame: *mut AVFrame) {
     let fmt = (*frame).format;
     let w = (*frame).width;
@@ -156,6 +158,7 @@ pub unsafe fn upload_frame(textures: &[GLuint], frame: *mut AVFrame) {
     }
 }
 
+#[allow(clippy::missing_safety_doc)]
 pub unsafe fn render_only(rs: &mut RenderState, shader: &Shader, quad: &QuadGeometry) {
     eglMakeCurrent(
         rs.egl_display,

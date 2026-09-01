@@ -44,13 +44,10 @@ extern "C" {
 
 #[link(name = "wayland-egl")]
 extern "C" {
-    pub fn wl_egl_window_create(
-        surface: *mut c_void,
-        width: c_int,
-        height: c_int,
-    ) -> *mut c_void;
+    pub fn wl_egl_window_create(surface: *mut c_void, width: c_int, height: c_int) -> *mut c_void;
     pub fn wl_egl_window_destroy(egl_window: *mut c_void);
-    pub fn wl_egl_window_resize( // unused but kept for resize support
+    pub fn wl_egl_window_resize(
+        // unused but kept for resize support
         egl_window: *mut c_void,
         width: c_int,
         height: c_int,
@@ -76,6 +73,7 @@ pub const EGL_NO_DISPLAY: *mut c_void = ptr::null_mut();
 pub const EGL_NO_CONTEXT: *mut c_void = ptr::null_mut();
 pub const EGL_NO_SURFACE: *mut c_void = ptr::null_mut();
 
+#[allow(clippy::missing_safety_doc)]
 pub unsafe fn init_egl(
     wl_display_ptr: *mut c_void,
     wl_surface_ptr: *mut c_void,
@@ -140,7 +138,12 @@ pub unsafe fn init_egl(
         EGL_CONTEXT_MINOR_VERSION, 3,
         EGL_NONE,
     ];
-    let egl_context = eglCreateContext(egl_display, egl_config, EGL_NO_CONTEXT, attribs_ctx.as_ptr());
+    let egl_context = eglCreateContext(
+        egl_display,
+        egl_config,
+        EGL_NO_CONTEXT,
+        attribs_ctx.as_ptr(),
+    );
     if egl_context == EGL_NO_CONTEXT {
         eglDestroySurface(egl_display, egl_surface);
         wl_egl_window_destroy(egl_window);

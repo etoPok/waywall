@@ -16,7 +16,6 @@ pub struct RenderState {
     pub textures: Vec<gl::types::GLuint>,
 }
 
-// SAFETY: accessed only from the main thread
 unsafe impl Send for RenderState {}
 unsafe impl Sync for RenderState {}
 

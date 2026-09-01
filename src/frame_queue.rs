@@ -19,6 +19,12 @@ pub struct FrameQueue {
 unsafe impl Send for FrameQueue {}
 unsafe impl Sync for FrameQueue {}
 
+impl Default for FrameQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[allow(dead_code)]
 impl FrameQueue {
     pub fn new() -> Self {
@@ -79,6 +85,10 @@ impl FrameQueue {
     pub fn len(&self) -> u32 {
         self.count.load(Ordering::Acquire)
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl Drop for FrameQueue {
@@ -90,5 +100,29 @@ impl Drop for FrameQueue {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_queue_is_empty() {
+        let q = FrameQueue::new();
+        assert_eq!(q.len(), 0);
+        assert!(q.try_get_read_slot().is_none());
+    }
+
+    #[test]
+    fn commit_write_makes_readable() {
+        let q = FrameQueue::new();
+        let _slot = q.get_write_slot();
+        // no need to write real frame, just commit
+        q.commit_write();
+        assert_eq!(q.len(), 1);
+        assert!(q.try_get_read_slot().is_some());
+        q.commit_read();
+        assert_eq!(q.len(), 0);
     }
 }

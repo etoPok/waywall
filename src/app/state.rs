@@ -170,7 +170,7 @@ impl App {
 
     pub fn acquire_or_create_buffer(
         &mut self,
-        vaapi_frame: *mut AVFrame,
+        vaapi_frame: &mut AVFrame,
     ) -> anyhow::Result<Option<&WlBufferState>> {
         let reusable_idx = self
             .wl_buffer_states
@@ -194,11 +194,10 @@ impl App {
                     }
                 }
 
-                converter
-                    .convert(vaapi_frame, &mut wbs.bgra_frame)
+                unsafe { converter.convert(vaapi_frame as *mut AVFrame, &mut wbs.bgra_frame) }
                     .map_err(|e| anyhow::anyhow!("VaapiConvert reuse failed: {e:#}"))?;
 
-                DrmFrame::map(wbs.bgra_frame, &mut wbs.drm_frame).map_err(|e| {
+                unsafe { DrmFrame::map(wbs.bgra_frame, &mut wbs.drm_frame) }.map_err(|e| {
                     unsafe {
                         av_frame_free(&mut wbs.bgra_frame);
                     }
@@ -265,12 +264,11 @@ impl App {
                 .ok_or_else(|| anyhow::anyhow!("VaapiConverter not initialized"))?;
 
             let mut bgra_frame: *mut AVFrame = std::ptr::null_mut();
-            converter
-                .convert(vaapi_frame, &mut bgra_frame)
+            unsafe { converter.convert(vaapi_frame as *mut AVFrame, &mut bgra_frame) }
                 .map_err(|e| anyhow::anyhow!("VaapiConvert alloc failed: {e:#}"))?;
 
             let mut drm_frame: *mut AVFrame = std::ptr::null_mut();
-            let drm_wrapper = match DrmFrame::map(bgra_frame, &mut drm_frame) {
+            let drm_wrapper = match unsafe { DrmFrame::map(bgra_frame, &mut drm_frame) } {
                 Ok(v) => v,
                 Err(e) => {
                     unsafe {

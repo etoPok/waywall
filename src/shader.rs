@@ -74,12 +74,7 @@ impl Shader {
                 let mut log_len: GLint = 0;
                 gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut log_len);
                 let mut log: Vec<u8> = Vec::with_capacity(log_len as usize);
-                gl::GetShaderInfoLog(
-                    shader,
-                    log_len,
-                    &mut log_len,
-                    log.as_mut_ptr() as *mut _,
-                );
+                gl::GetShaderInfoLog(shader, log_len, &mut log_len, log.as_mut_ptr() as *mut _);
                 log.set_len(log_len as usize);
                 let msg = String::from_utf8_lossy(&log);
                 panic!("Shader compile error: {}", msg);
@@ -112,12 +107,7 @@ impl Shader {
                 let mut log_len: GLint = 0;
                 gl::GetProgramiv(program, gl::INFO_LOG_LENGTH, &mut log_len);
                 let mut log: Vec<u8> = Vec::with_capacity(log_len as usize);
-                gl::GetProgramInfoLog(
-                    program,
-                    log_len,
-                    &mut log_len,
-                    log.as_mut_ptr() as *mut _,
-                );
+                gl::GetProgramInfoLog(program, log_len, &mut log_len, log.as_mut_ptr() as *mut _);
                 log.set_len(log_len as usize);
                 let msg = String::from_utf8_lossy(&log);
                 panic!("Program link error: {}", msg);
@@ -127,9 +117,12 @@ impl Shader {
             gl::DeleteShader(fs);
         }
 
-        let y_tex_loc = unsafe { gl::GetUniformLocation(program, CString::new("y_tex").unwrap().as_ptr()) };
-        let u_tex_loc = unsafe { gl::GetUniformLocation(program, CString::new("u_tex").unwrap().as_ptr()) };
-        let v_tex_loc = unsafe { gl::GetUniformLocation(program, CString::new("v_tex").unwrap().as_ptr()) };
+        let y_tex_loc =
+            unsafe { gl::GetUniformLocation(program, CString::new("y_tex").unwrap().as_ptr()) };
+        let u_tex_loc =
+            unsafe { gl::GetUniformLocation(program, CString::new("u_tex").unwrap().as_ptr()) };
+        let v_tex_loc =
+            unsafe { gl::GetUniformLocation(program, CString::new("v_tex").unwrap().as_ptr()) };
 
         Self {
             program,
@@ -161,6 +154,12 @@ impl Shader {
 pub struct QuadGeometry {
     pub vao: GLuint,
     pub vbo: GLuint,
+}
+
+impl Default for QuadGeometry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[allow(dead_code)]

@@ -12,7 +12,21 @@ pub struct VaapiConverter {
 }
 
 impl VaapiConverter {
-    pub fn new(hw_device_ctx: *mut AVBufferRef, width: i32, height: i32) -> Result<Self> {
+    /// Creates a VAAPI `scale_vaapi` filter graph for `NV12 -> BGRA` conversion.
+    ///
+    /// # Safety
+    /// - `hw_device_ctx` must be a valid, non-null `*mut AVBufferRef` obtained
+    ///   from `av_hwdevice_ctx_create` with `AV_HWDEVICE_TYPE_VAAPI` (e.g.
+    ///   `Decoder.hw_device_ctx`) and must remain valid for the duration of the
+    ///   call. The graph retains a reference via `av_buffer_ref`.
+    /// - `width` and `height` must be positive and match the dimensions of
+    ///   frames that will be fed to `convert` (VAAPI `AVFrame.width/height`).
+    ///   `height` 1088 is the VAAPI-aligned height expected by the filter
+    ///   (caller must ensure the decoder was configured with compatible
+    ///   `AVHWFramesContext`).
+    /// - Caller must ensure FFmpeg `libavfilter` is initialized for `VAAPI`
+    ///   and that `scale_vaapi`/`buffer`/`buffersink` filters are available.
+    pub unsafe fn new(hw_device_ctx: *mut AVBufferRef, width: i32, height: i32) -> Result<Self> {
         unsafe {
             let mut graph = avfilter_graph_alloc();
             if graph.is_null() {
@@ -147,7 +161,22 @@ impl VaapiConverter {
         }
     }
 
-    pub fn convert(
+    /// Converts a VAAPI frame to BGRA via the filter graph.
+    ///
+    /// # Safety
+    /// - `vaapi_frame` must be a valid, non-null `*mut AVFrame` with
+    ///   `format == AV_PIX_FMT_VAAPI`, obtained from the decoder queue, and
+    ///   must remain valid for the call. Its `width/height/format/pts` are
+    ///   read.
+    /// - `bgra_frame` must be a valid `&mut *mut AVFrame`. It may be null
+    ///   (a new frame will be allocated with `av_frame_alloc`) or point to a
+    ///   valid `AVFrame`. On success `*bgra_frame` is owned by the caller and
+    ///   must be freed with `av_frame_free`/`av_frame_unref`; on failure it
+    ///   is freed internally.
+    /// - `self` must have been created by `VaapiConverter::new` with matching
+    ///   `width/height` and must not be concurrently accessed. The underlying
+    ///   `AVFilterGraph` must remain valid.
+    pub unsafe fn convert(
         &mut self,
         vaapi_frame: *mut AVFrame,
         bgra_frame: &mut *mut AVFrame,

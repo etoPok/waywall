@@ -360,7 +360,7 @@ pub fn bootstrap_drm_pipeline(args: &mut Args) -> Result<BootstrapOutput> {
     // ------------------------------------------------------------------
 
     let decoder = Decoder::start(
-        &video_path.to_string_lossy().to_string(),
+        video_path.to_string_lossy().as_ref(),
         app.frame_queue.clone(),
         notifier,
         error_ping,

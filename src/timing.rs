@@ -36,3 +36,43 @@ impl Timing {
         now > render_time + self.drop_threshold
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn render_time_nop_returns_now() {
+        let t = Timing::new(1.0 / 30.0);
+        const NOP: i64 = 0x8000000000000000u64 as i64;
+        let before = Instant::now();
+        let rt = t.render_time(NOP);
+        let after = Instant::now();
+        assert!(rt >= before && rt <= after);
+    }
+
+    #[test]
+    fn should_not_drop_nop() {
+        let t = Timing::new(1.0 / 30.0);
+        const NOP: i64 = 0x8000000000000000u64 as i64;
+        assert!(!t.should_drop(NOP, Instant::now()));
+    }
+
+    #[test]
+    fn should_drop_late_frame() {
+        let t = Timing::new(1.0 / 1000.0);
+        // pts 0 => render_time ~ start_time, now far in future => should drop
+        let late = Instant::now() + Duration::from_millis(200);
+        assert!(t.should_drop(0, late));
+    }
+
+    #[test]
+    fn render_time_negative_secs_falls_back_to_start() {
+        let t = Timing::new(1.0 / 30.0);
+        // negative pts => secs negative => fallback to start_time
+        let rt = t.render_time(-1000);
+        // should be approximately start_time, not panic
+        assert!(rt <= Instant::now());
+    }
+}

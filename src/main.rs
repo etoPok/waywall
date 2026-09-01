@@ -1,18 +1,3 @@
-#![allow(dead_code)]
-
-mod app;
-mod cli;
-mod decoder;
-mod drm_frame;
-mod frame_queue;
-mod notifier;
-mod render;
-mod runtime;
-mod shader;
-mod timing;
-mod vaapi_converter;
-mod wayland;
-
 use anyhow::Result;
 
 fn main() -> Result<()> {
@@ -23,10 +8,10 @@ fn main() -> Result<()> {
         )
         .init();
 
-    let mut args = cli::args::parse();
-    let bootstrap_output = app::bootstrap::bootstrap_drm_pipeline(&mut args)?;
+    let mut args = waywall::cli::args::parse();
+    let bootstrap_output = waywall::app::bootstrap::bootstrap_drm_pipeline(&mut args)?;
 
-    runtime::event_loop::run_drm(
+    waywall::runtime::event_loop::run_drm(
         bootstrap_output.app,
         bootstrap_output.conn,
         bootstrap_output.queue,
