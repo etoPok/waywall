@@ -11,12 +11,7 @@ use waywall::app::state::App;
 const DRM_TEST_FRAMES: u64 = 60;
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "waywall=info".parse().unwrap()),
-        )
-        .init();
+    waywall::logging::init_test();
 
     let mut args = waywall::cli::args::parse();
     let out = waywall::app::bootstrap::bootstrap_drm_pipeline(&mut args)?;

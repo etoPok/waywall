@@ -1,5 +1,5 @@
 use ffmpeg_sys_next::*;
-use tracing::info;
+use tracing::{debug, info};
 
 pub struct DrmPlane {
     pub fd: std::os::unix::io::RawFd,
@@ -73,7 +73,10 @@ impl DrmFrame {
                 let mut planes = Vec::new();
                 let layer = &(*desc).layers[layer_idx as usize];
 
-                info!("layer[{}] format {}", layer_idx, layer.format);
+                debug!(
+                    "layer[{}] format {:#x} ({}), nb_planes={}",
+                    layer_idx, layer.format, layer.format, layer.nb_planes
+                );
 
                 for plane_idx in 0..layer.nb_planes {
                     let plane = &layer.planes[plane_idx as usize];
@@ -85,9 +88,15 @@ impl DrmFrame {
                     }
                     let obj = &(*desc).objects[obj_idx];
 
-                    info!(
-                        "object[{}]: fd={}, size={}, modifier={:#x}",
-                        obj_idx, obj.fd, obj.size, obj.format_modifier
+                    debug!(
+                        "object[{}]: fd={}, size={}, modifier={:#x} plane[{}] offset={} pitch={}",
+                        obj_idx,
+                        obj.fd,
+                        obj.size,
+                        obj.format_modifier,
+                        plane_idx,
+                        plane.offset,
+                        plane.pitch
                     );
 
                     planes.push(DrmPlane {
@@ -114,18 +123,16 @@ impl DrmFrame {
             let width = (*frame).width;
             let height = (*frame).height;
             let format = (*desc).layers[0].format;
-            info!(
-                "drm format {:#x} frame pix_fmt {}",
-                format,
-                (*frame).format as u32
-            );
 
             info!(
-                "Mapped VAAPI frame to DRM_PRIME: {}x{} format {} planes {}",
+                "Mapped VAAPI frame pix_fmt={} ({}) to DRM_PRIME: {}x{} drm_fourcc={:#x} ({}) layers={}",
+                (*frame).format,
+                (*frame).format as u32,
                 width,
                 height,
                 format,
-                layers.len()
+                format,
+                layers.len(),
             );
 
             let va_surface_id = (*frame).data[3] as u64;

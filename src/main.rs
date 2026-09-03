@@ -1,12 +1,7 @@
 use anyhow::Result;
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "waywall=info".parse().unwrap()),
-        )
-        .init();
+    waywall::logging::init_prod();
 
     let mut args = waywall::cli::args::parse();
     let bootstrap_output = waywall::app::bootstrap::bootstrap_drm_pipeline(&mut args)?;
