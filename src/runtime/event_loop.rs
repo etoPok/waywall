@@ -281,7 +281,29 @@ pub fn process_drm(app: &mut App) {
     if app.converter.is_none() {
         let w = unsafe { (*frame_ptr).width };
         let h = unsafe { (*frame_ptr).height };
-        match unsafe { VaapiConverter::new(app.decoder.as_ref().unwrap().hw_device_ctx, w, h) } {
+        let decoder = match app.decoder.as_ref() {
+            Some(d) => d,
+            None => {
+                error!("VAAPI converter: no decoder available");
+                app.frame_queue.commit_read();
+                if let Some(ref signal) = app.loop_signal {
+                    signal.stop();
+                }
+                return;
+            }
+        };
+        let frames = match decoder.hw_frames_ctx() {
+            Some(f) => f,
+            None => {
+                error!("VAAPI converter: hw_frames_ctx not available");
+                app.frame_queue.commit_read();
+                if let Some(ref signal) = app.loop_signal {
+                    signal.stop();
+                }
+                return;
+            }
+        };
+        match unsafe { VaapiConverter::new(frames.as_ptr(), w, h) } {
             Ok(converter) => {
                 app.converter = Some(converter);
             }

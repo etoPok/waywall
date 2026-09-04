@@ -21,12 +21,11 @@ impl VaapiConverter {
     ///   call. The graph retains a reference via `av_buffer_ref`.
     /// - `width` and `height` must be positive and match the dimensions of
     ///   frames that will be fed to `convert` (VAAPI `AVFrame.width/height`).
-    ///   `height` 1088 is the VAAPI-aligned height expected by the filter
     ///   (caller must ensure the decoder was configured with compatible
     ///   `AVHWFramesContext`).
     /// - Caller must ensure FFmpeg `libavfilter` is initialized for `VAAPI`
     ///   and that `scale_vaapi`/`buffer`/`buffersink` filters are available.
-    pub unsafe fn new(hw_device_ctx: *mut AVBufferRef, width: i32, height: i32) -> Result<Self> {
+    pub unsafe fn new(hw_frames_ctx: *mut AVBufferRef, width: i32, height: i32) -> Result<Self> {
         unsafe {
             let mut graph = avfilter_graph_alloc();
             if graph.is_null() {
@@ -60,26 +59,16 @@ impl VaapiConverter {
                 anyhow::bail!("create buffer src failed: {}", ret);
             }
 
-            let mut in_hw_frames = av_hwframe_ctx_alloc(hw_device_ctx);
-            let in_ctx = (*in_hw_frames).data as *mut AVHWFramesContext;
-            (*in_ctx).format = AVPixelFormat::AV_PIX_FMT_VAAPI;
-            (*in_ctx).sw_format = AVPixelFormat::AV_PIX_FMT_NV12;
-            (*in_ctx).width = width;
-            (*in_ctx).height = 1088;
-            (*in_ctx).initial_pool_size = 4;
-            av_hwframe_ctx_init(in_hw_frames);
-
             let params = av_buffersrc_parameters_alloc();
             (*params).format = AVPixelFormat::AV_PIX_FMT_VAAPI as i32;
             (*params).width = width;
             (*params).height = height;
-            (*params).hw_frames_ctx = av_buffer_ref(in_hw_frames);
+            (*params).hw_frames_ctx = av_buffer_ref(hw_frames_ctx);
             av_buffersrc_parameters_set(src_ctx, params);
             if !(*params).hw_frames_ctx.is_null() {
                 av_buffer_unref(&mut (*params).hw_frames_ctx);
             }
             av_free(params as *mut libc::c_void);
-            av_buffer_unref(&mut in_hw_frames);
 
             let scale_filter = avfilter_get_by_name(c"scale_vaapi".as_ptr());
             if scale_filter.is_null() {
@@ -88,7 +77,7 @@ impl VaapiConverter {
             }
             let mut scale_ctx: *mut AVFilterContext = ptr::null_mut();
 
-            let scale_args = CString::new(format!("w={}:h={}:format=bgra", width, 1088))?;
+            let scale_args = CString::new(format!("w={}:h={}:format=bgra", width, height))?;
 
             let ret = avfilter_graph_create_filter(
                 &mut scale_ctx,

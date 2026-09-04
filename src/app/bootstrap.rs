@@ -192,14 +192,9 @@ pub fn bootstrap(args: &mut Args) -> Result<BootstrapOutput> {
     )
     .context("Failed to start decoder")?;
 
-    info!(
-        "Decoder started: {}x{}, time_base={}",
-        decoder.width, decoder.height, decoder.time_base
-    );
+    info!("Decoder started: time_base={}", decoder.time_base);
 
     app.decoder = Some(decoder);
-
-    info!("Starting render loop...");
 
     Ok(BootstrapOutput {
         app,
@@ -368,14 +363,9 @@ pub fn bootstrap_drm_pipeline(args: &mut Args) -> Result<BootstrapOutput> {
     )
     .context("Failed to start decoder")?;
 
-    info!(
-        "Decoder started: {}x{}, time_base={}",
-        decoder.width, decoder.height, decoder.time_base
-    );
+    info!("Decoder started: time_base={}", decoder.time_base);
 
     app.decoder = Some(decoder);
-
-    info!("Starting render loop...");
 
     Ok(BootstrapOutput {
         app,

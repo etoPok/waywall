@@ -102,15 +102,32 @@ fn try_init_vaapi_hw(ctx: *mut AVCodecContext) -> bool {
     }
 }
 
+pub struct HwDeviceRef<'a> {
+    inner: &'a AVBufferRef,
+}
+
+impl<'a> HwDeviceRef<'a> {
+    pub fn as_ptr(&self) -> *mut AVBufferRef {
+        self.inner as *const AVBufferRef as *mut AVBufferRef
+    }
+}
+
+pub struct HwFramesRef<'a> {
+    inner: &'a AVBufferRef,
+}
+
+impl<'a> HwFramesRef<'a> {
+    pub fn as_ptr(&self) -> *mut AVBufferRef {
+        self.inner as *const AVBufferRef as *mut AVBufferRef
+    }
+}
+
 #[allow(dead_code)]
 pub struct Decoder {
     pub thread: Option<JoinHandle<()>>,
     pub running: Arc<AtomicBool>,
     pub time_base: f64,
-    pub width: i32,
-    pub height: i32,
-    pub pixel_format: AVPixelFormat,
-    pub hw_device_ctx: *mut AVBufferRef,
+    ctx: *mut AVCodecContext,
 }
 
 impl Decoder {
@@ -177,7 +194,7 @@ impl Decoder {
             }
         }
 
-        let mut hw_device_ctx = if use_vaapi {
+        if use_vaapi {
             match init_hw_device(codec_ctx) {
                 Ok(v) => v,
                 Err(e) => {
@@ -188,16 +205,11 @@ impl Decoder {
                     return Err(e);
                 }
             }
-        } else {
-            ptr::null_mut()
-        };
+        }
 
         unsafe {
             let ret = avcodec_open2(codec_ctx, codec, std::ptr::null_mut());
             if ret < 0 {
-                if use_vaapi {
-                    av_buffer_unref(&mut hw_device_ctx);
-                }
                 avcodec_free_context(&mut codec_ctx);
                 avformat_close_input(&mut fmt_ctx);
                 anyhow::bail!("avcodec_open2 failed");
@@ -235,25 +247,44 @@ impl Decoder {
             thread: Some(thread),
             running,
             time_base,
-            width,
-            height,
-            pixel_format,
-            hw_device_ctx,
+            ctx: codec_ctx,
         })
     }
 
     pub fn stop(&self) {
         self.running.store(false, Ordering::Relaxed);
     }
+
+    /// `None` if `use_vaapi=false` or `ctx` is null.
+    pub fn hw_device_ctx(&self) -> Option<HwDeviceRef<'_>> {
+        if self.ctx.is_null() {
+            return None;
+        }
+        unsafe {
+            (*self.ctx)
+                .hw_device_ctx
+                .as_ref()
+                .map(|r| HwDeviceRef { inner: r })
+        }
+    }
+
+    /// `None` on software fallback or before `get_format` sets it.
+    pub fn hw_frames_ctx(&self) -> Option<HwFramesRef<'_>> {
+        if self.ctx.is_null() {
+            return None;
+        }
+        unsafe {
+            (*self.ctx)
+                .hw_frames_ctx
+                .as_ref()
+                .map(|r| HwFramesRef { inner: r })
+        }
+    }
 }
 
 impl Drop for Decoder {
     fn drop(&mut self) {
         self.stop();
-
-        if !self.hw_device_ctx.is_null() {
-            unsafe { av_buffer_unref(&mut self.hw_device_ctx) };
-        }
     }
 }
 
@@ -284,7 +315,7 @@ fn set_video_stream(
     Ok((-1, ptr::null_mut(), 0, 0, 0, 0))
 }
 
-fn init_hw_device(codec_ctx: *mut AVCodecContext) -> Result<*mut AVBufferRef> {
+fn init_hw_device(codec_ctx: *mut AVCodecContext) -> Result<()> {
     let mut hw_device_ctx: *mut AVBufferRef = ptr::null_mut();
 
     unsafe {
@@ -301,10 +332,10 @@ fn init_hw_device(codec_ctx: *mut AVCodecContext) -> Result<*mut AVBufferRef> {
         }
 
         (*codec_ctx).get_format = Some(vaapi_get_format);
-        (*codec_ctx).hw_device_ctx = av_buffer_ref(hw_device_ctx);
+        (*codec_ctx).hw_device_ctx = hw_device_ctx;
     }
 
-    Ok(hw_device_ctx)
+    Ok(())
 }
 
 fn decode_loop(
