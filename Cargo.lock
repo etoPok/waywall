@@ -202,17 +202,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ffmpeg-next"
-version = "8.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7c4bd5ab1ac61f29c634df1175d350ded29cf74c3c6d4f7030431a5ae3c7d5d"
-dependencies = [
- "bitflags",
- "ffmpeg-sys-next",
- "libc",
-]
-
-[[package]]
 name = "ffmpeg-sys-next"
 version = "8.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -807,7 +796,6 @@ dependencies = [
  "anyhow",
  "calloop 0.13.0",
  "calloop-wayland-source 0.3.0",
- "ffmpeg-next",
  "ffmpeg-sys-next",
  "gl",
  "libc",

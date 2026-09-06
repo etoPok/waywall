@@ -30,7 +30,6 @@ calloop = "0.13"
 calloop-wayland-source = "0.3"
 
 # FFmpeg
-ffmpeg-next = "8.1"
 ffmpeg-sys-next = "8.1"
 
 # OpenGL bindings

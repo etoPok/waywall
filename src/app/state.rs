@@ -243,7 +243,7 @@ impl App {
 
             let wl_buffer = params.create_immed(
                 wbs.drm_frame_wrapper.width,
-                1088,
+                wbs.drm_frame_wrapper.height,
                 wbs.drm_frame_wrapper.format,
                 Flags::empty(),
                 self.qh.as_ref().unwrap(),
@@ -303,7 +303,7 @@ impl App {
 
             let wl_buffer = params.create_immed(
                 drm_wrapper.width,
-                1088,
+                drm_wrapper.height,
                 drm_wrapper.format,
                 Flags::empty(),
                 self.qh.as_ref().unwrap(),

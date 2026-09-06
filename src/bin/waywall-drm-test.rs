@@ -225,7 +225,12 @@ fn process_drm_test(app: &mut App) {
     };
 
     surface.attach(wbs.wl_buffer.as_ref(), 0, 0);
-    surface.damage_buffer(0, 0, wbs.drm_frame_wrapper.width, 1088);
+    surface.damage_buffer(
+        0,
+        0,
+        wbs.drm_frame_wrapper.width,
+        wbs.drm_frame_wrapper.height,
+    );
     surface.commit();
     app.frame_queue.commit_read();
     app.frame_count += 1;
