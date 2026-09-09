@@ -112,6 +112,7 @@ pub struct App {
 
     // DMA-BUF
     pub dmabuf: Option<ZwpLinuxDmabufV1>,
+    pub dmabuf_main_device: Option<Vec<u8>>,
     pub wl_buffer_states: [Option<WlBufferState>; 3],
     pub converter: Option<VaapiConverter>,
 
@@ -149,6 +150,7 @@ impl App {
             layer_shell,
             viewporter: None,
             dmabuf: None,
+            dmabuf_main_device: None,
             wl_buffer_states: std::array::from_fn(|_| None),
             converter: None,
             monitors: Vec::new(),

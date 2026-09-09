@@ -4,6 +4,7 @@ pub mod app;
 pub mod cli;
 pub mod decoder;
 pub mod drm_frame;
+pub mod drm_node;
 pub mod frame_queue;
 pub mod logging;
 pub mod notifier;

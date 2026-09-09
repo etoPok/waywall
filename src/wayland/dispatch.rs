@@ -20,7 +20,8 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
 use wayland_protocols::wp::{
     linux_dmabuf::zv1::client::{
         zwp_linux_buffer_params_v1, zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1,
-        zwp_linux_dmabuf_v1, zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
+        zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1,
+        zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
     },
     viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
 };
@@ -176,40 +177,33 @@ impl Dispatch<ZwpLinuxBufferParamsV1, ()> for App {
     }
 }
 
-impl Dispatch<ZwpLinuxDmabufV1, ()> for App {
+impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for App {
     fn event(
-        _state: &mut Self,
-        _proxy: &ZwpLinuxDmabufV1,
-        event: zwp_linux_dmabuf_v1::Event,
+        state: &mut Self,
+        _proxy: &ZwpLinuxDmabufFeedbackV1,
+        event: <ZwpLinuxDmabufFeedbackV1 as Proxy>::Event,
         _data: &(),
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        match event {
-            zwp_linux_dmabuf_v1::Event::Format { format: _ } => {
-                // info!("🎨 Compositor supports format: {}", format);
-            }
-            // zwp_linux_dmabuf_v1::Event::Modifier {
-            //     format: _,
-            //     modifier_hi: _,
-            //     modifier_lo: _,
-            // } => {
-            //     info!(
-            //         "🎨 Compositor supports format {} with modifier_lo: {} and modifier_hi {}",
-            //         format, modifier_lo, modifier_hi
-            //     );
-            // }
-            zwp_linux_dmabuf_v1::Event::Modifier {
-                format: _,
-                modifier_hi: _,
-                modifier_lo: _,
-            } => {
-                // info!(
-                //     "🎨 Compositor supports format {} with modifier_lo: {} and modifier_hi {}",
-                //     format, modifier_lo, modifier_hi
-                // );
-            }
-            _ => {}
+        if let wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_feedback_v1::Event::MainDevice {
+            device,
+        } = event
+        {
+            info!("dmabuf feedback main_device: {:?}", device);
+            state.dmabuf_main_device = Some(device);
         }
+    }
+}
+
+impl Dispatch<ZwpLinuxDmabufV1, ()> for App {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpLinuxDmabufV1,
+        _event: <ZwpLinuxDmabufV1 as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
     }
 }

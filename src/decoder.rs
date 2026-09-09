@@ -1,4 +1,5 @@
 use std::ffi::CString;
+use std::path::Path;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -137,6 +138,7 @@ impl Decoder {
         notifier: Notifier,
         error_ping: ping::Ping,
         use_vaapi: bool,
+        vaapi_drm_node: Option<&Path>,
     ) -> Result<Self> {
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = running.clone();
@@ -166,6 +168,7 @@ impl Decoder {
             set_video_stream(fmt_ctx)?;
 
         if video_stream_idx < 0 {
+            unsafe { avformat_close_input(&mut fmt_ctx) };
             anyhow::bail!("No video stream found");
         }
 
@@ -195,7 +198,16 @@ impl Decoder {
         }
 
         if use_vaapi {
-            match init_hw_device(codec_ctx) {
+            let Some(drm_node) = vaapi_drm_node else {
+                unsafe {
+                    avcodec_free_context(&mut codec_ctx);
+                    avformat_close_input(&mut fmt_ctx);
+                }
+                anyhow::bail!(
+                    "VAAPI requested but no DRM render node was resolved from the compositor"
+                );
+            };
+            match init_hw_device(codec_ctx, drm_node) {
                 Ok(v) => v,
                 Err(e) => {
                     unsafe {
@@ -226,7 +238,7 @@ impl Decoder {
 
         let fmt_ctx_raw = fmt_ctx as usize;
         let codec_ctx_raw = codec_ctx as usize;
-        let thread = thread::Builder::new()
+        let thread = match thread::Builder::new()
             .name("decoder".into())
             .spawn(move || {
                 let fmt_ctx = fmt_ctx_raw as *mut AVFormatContext;
@@ -241,7 +253,17 @@ impl Decoder {
                     error_ping,
                 );
             })
-            .context("Failed to spawn decoder thread")?;
+            .context("Failed to spawn decoder thread")
+        {
+            Ok(thread) => thread,
+            Err(e) => {
+                unsafe {
+                    avcodec_free_context(&mut codec_ctx);
+                    avformat_close_input(&mut fmt_ctx);
+                }
+                return Err(e);
+            }
+        };
 
         Ok(Self {
             thread: Some(thread),
@@ -315,20 +337,26 @@ fn set_video_stream(
     Ok((-1, ptr::null_mut(), 0, 0, 0, 0))
 }
 
-fn init_hw_device(codec_ctx: *mut AVCodecContext) -> Result<()> {
+fn init_hw_device(codec_ctx: *mut AVCodecContext, drm_node: &Path) -> Result<()> {
     let mut hw_device_ctx: *mut AVBufferRef = ptr::null_mut();
+    let drm_node_c = CString::new(drm_node.as_os_str().as_encoded_bytes())
+        .with_context(|| format!("Invalid DRM node path: {}", drm_node.display()))?;
 
     unsafe {
         let ret = av_hwdevice_ctx_create(
             &mut hw_device_ctx,
             AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
-            CString::new("/dev/dri/renderD129").unwrap().as_ptr(),
+            drm_node_c.as_ptr(),
             ptr::null_mut(),
             0,
         );
 
         if ret < 0 {
-            anyhow::bail!("av_hwdevice_ctx_create failed");
+            anyhow::bail!(
+                "av_hwdevice_ctx_create failed for {}: {}",
+                drm_node.display(),
+                ret
+            );
         }
 
         (*codec_ctx).get_format = Some(vaapi_get_format);

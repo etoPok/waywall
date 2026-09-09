@@ -1,17 +1,18 @@
 use std::ffi::CString;
 use std::os::raw::c_void;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Ok, Result};
 use calloop::ping;
 use tracing::{info, warn};
 use wayland_client::protocol::wl_output::WlOutput;
-use wayland_client::{globals::registry_queue_init, Connection};
+use wayland_client::{globals::registry_queue_init, Connection, EventQueue, QueueHandle};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
 use crate::cli::args::Args;
 use crate::decoder::Decoder;
+use crate::drm_node::render_node_from_main_device;
 use crate::render::egl::init_egl;
 use crate::render::state::RenderState;
 use crate::shader::{QuadGeometry, Shader};
@@ -27,8 +28,47 @@ pub struct BootstrapOutput {
 }
 
 pub fn bootstrap(args: &mut Args) -> Result<BootstrapOutput> {
-    info!("waywall starting with video: {}", &args.video_path);
+    if args.use_vaapi {
+        bootstrap_drm_pipeline(args)
+    } else {
+        bootstrap_gl_egl(args)
+    }
+}
 
+fn resolve_compositor_render_node(
+    queue: &mut EventQueue<App>,
+    app: &mut App,
+    qh: &QueueHandle<App>,
+) -> Result<PathBuf> {
+    let feedback = {
+        let dmabuf = app
+            .dmabuf
+            .as_ref()
+            .context("Missing zwp_linux_dmabuf_v1 to request feedback")?;
+        dmabuf.get_default_feedback(qh, ())
+    };
+
+    let main_device = {
+        for _ in 0..5 {
+            if app.dmabuf_main_device.is_some() {
+                break;
+            }
+            queue
+                .roundtrip(app)
+                .context("Error waiting for main_device from linux-dmabuf feedback")?;
+        }
+        app.dmabuf_main_device
+            .take()
+            .context("The compositor did not send zwp_linux_dmabuf_feedback_v1.main_device")
+    }?;
+
+    feedback.destroy();
+    let render_node = render_node_from_main_device(&main_device)?;
+    info!("Render node: {}", render_node.display());
+    Ok(render_node)
+}
+
+pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
     // Validate file
     let video_path = Path::new(&args.video_path);
     if !video_path.exists() {
@@ -189,6 +229,7 @@ pub fn bootstrap(args: &mut Args) -> Result<BootstrapOutput> {
         notifier,
         error_ping,
         args.use_vaapi,
+        None,
     )
     .context("Failed to start decoder")?;
 
@@ -206,8 +247,6 @@ pub fn bootstrap(args: &mut Args) -> Result<BootstrapOutput> {
 }
 
 pub fn bootstrap_drm_pipeline(args: &mut Args) -> Result<BootstrapOutput> {
-    info!("waywall starting with video: {}", &args.video_path);
-
     // Validate file
     let video_path = Path::new(&args.video_path);
     if !video_path.exists() {
@@ -238,15 +277,9 @@ pub fn bootstrap_drm_pipeline(args: &mut Args) -> Result<BootstrapOutput> {
         warn!("wl_viewporter not available, fallback to logical size for EGL");
     }
 
-    let mut dmabuf: Option<ZwpLinuxDmabufV1> = None;
-    if args.use_vaapi {
-        dmabuf = globals.bind(&qh, 1..=3, ()).ok();
-        if dmabuf.is_none() {
-            warn!("zwp_linux_dmabuf_v1 not availble, zero-copy dmabuf path disabled. Using software fallback");
-            args.use_vaapi = false;
-            args.use_gl = true;
-        }
-    }
+    let dmabuf: ZwpLinuxDmabufV1 = globals.bind(&qh, 4..=4, ()).context(
+        "Compositor does not support zwp_linux_dmabuf_v1 v4 (required for drm pipeline)",
+    )?;
 
     // ------------------------------------------------------------------
     // Initial state
@@ -255,7 +288,7 @@ pub fn bootstrap_drm_pipeline(args: &mut Args) -> Result<BootstrapOutput> {
     let mut app = App::new(conn.clone(), compositor, layer_shell);
     app.qh = Some(qh.clone());
     app.viewporter = viewporter;
-    app.dmabuf = dmabuf;
+    app.dmabuf = Some(dmabuf);
 
     let registry = globals.registry();
     for global in globals.contents().clone_list() {
@@ -341,6 +374,13 @@ pub fn bootstrap_drm_pipeline(args: &mut Args) -> Result<BootstrapOutput> {
     }
 
     // ------------------------------------------------------------------
+    // Resolve compositor GPU before starting the decoder.
+    // ------------------------------------------------------------------
+
+    let render_node = resolve_compositor_render_node(&mut queue, &mut app, &qh)
+        .context("Failed to resolve compositor render node")?;
+
+    // ------------------------------------------------------------------
     // Decoder PingSource
     // ------------------------------------------------------------------
 
@@ -360,6 +400,7 @@ pub fn bootstrap_drm_pipeline(args: &mut Args) -> Result<BootstrapOutput> {
         notifier,
         error_ping,
         args.use_vaapi,
+        Some(&render_node),
     )
     .context("Failed to start decoder")?;
 
