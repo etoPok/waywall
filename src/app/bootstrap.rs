@@ -1,12 +1,13 @@
 use std::ffi::CString;
 use std::os::raw::c_void;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::time::{Duration, Instant};
 
-use anyhow::{Context, Ok, Result};
+use anyhow::{bail, Context, Ok, Result};
 use calloop::ping;
 use tracing::{info, warn};
 use wayland_client::protocol::wl_output::WlOutput;
-use wayland_client::{globals::registry_queue_init, Connection, EventQueue, QueueHandle};
+use wayland_client::{globals::registry_queue_init, Connection};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
@@ -29,43 +30,10 @@ pub struct BootstrapOutput {
 
 pub fn bootstrap(args: &mut Args) -> Result<BootstrapOutput> {
     if args.use_vaapi {
-        bootstrap_drm_pipeline(args)
+        bootstrap_drm(args)
     } else {
         bootstrap_gl_egl(args)
     }
-}
-
-fn resolve_compositor_render_node(
-    queue: &mut EventQueue<App>,
-    app: &mut App,
-    qh: &QueueHandle<App>,
-) -> Result<PathBuf> {
-    let feedback = {
-        let dmabuf = app
-            .dmabuf
-            .as_ref()
-            .context("Missing zwp_linux_dmabuf_v1 to request feedback")?;
-        dmabuf.get_default_feedback(qh, ())
-    };
-
-    let main_device = {
-        for _ in 0..5 {
-            if app.dmabuf_main_device.is_some() {
-                break;
-            }
-            queue
-                .roundtrip(app)
-                .context("Error waiting for main_device from linux-dmabuf feedback")?;
-        }
-        app.dmabuf_main_device
-            .take()
-            .context("The compositor did not send zwp_linux_dmabuf_feedback_v1.main_device")
-    }?;
-
-    feedback.destroy();
-    let render_node = render_node_from_main_device(&main_device)?;
-    info!("Render node: {}", render_node.display());
-    Ok(render_node)
 }
 
 pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
@@ -210,18 +178,13 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
     }
 
     // ------------------------------------------------------------------
-    // Decoder PingSource
+    // Start decoder
     // ------------------------------------------------------------------
 
     let (ping, ping_source) = ping::make_ping().context("Failed to create decoder wakeup ping")?;
     let notifier = crate::notifier::Notifier(ping);
-
     let (error_ping, error_ping_source) =
         ping::make_ping().context("Failed to create decoder error ping")?;
-
-    // ------------------------------------------------------------------
-    // Start decoder
-    // ------------------------------------------------------------------
 
     let decoder = Decoder::start(
         &video_path_str,
@@ -232,9 +195,6 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
         None,
     )
     .context("Failed to start decoder")?;
-
-    info!("Decoder started: time_base={}", decoder.time_base);
-
     app.decoder = Some(decoder);
 
     Ok(BootstrapOutput {
@@ -246,7 +206,7 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
     })
 }
 
-pub fn bootstrap_drm_pipeline(args: &mut Args) -> Result<BootstrapOutput> {
+pub fn bootstrap_drm(args: &mut Args) -> Result<BootstrapOutput> {
     // Validate file
     let video_path = Path::new(&args.video_path);
     if !video_path.exists() {
@@ -280,6 +240,7 @@ pub fn bootstrap_drm_pipeline(args: &mut Args) -> Result<BootstrapOutput> {
     let dmabuf: ZwpLinuxDmabufV1 = globals.bind(&qh, 4..=4, ()).context(
         "Compositor does not support zwp_linux_dmabuf_v1 v4 (required for drm pipeline)",
     )?;
+    let feedback = dmabuf.get_default_feedback(&qh, ());
 
     // ------------------------------------------------------------------
     // Initial state
@@ -358,41 +319,45 @@ pub fn bootstrap_drm_pipeline(args: &mut Args) -> Result<BootstrapOutput> {
         );
     }
 
-    let mut configure_attempts = 0;
-    while !app.configured && configure_attempts < 50 {
+    // ------------------------------------------------------------------
+    // Comprobar que los eventos se hayan despachado
+    // ------------------------------------------------------------------
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !app.configured || app.dmabuf_main_device.is_none() {
+        if Instant::now() >= deadline {
+            break;
+        }
         queue
             .blocking_dispatch(&mut app)
             .context("Error waiting for configure")?;
-        configure_attempts += 1;
     }
 
-    if !app.configured {
-        anyhow::bail!(
-            "Compositor did not send configuration after {} attempts.",
-            configure_attempts
+    if app.dmabuf_main_device.is_none() {
+        feedback.destroy();
+        bail!(
+            "Compositor did not send zwp_linux_dmabuf_feedback_v1.main_device within waiting time."
         );
     }
 
-    // ------------------------------------------------------------------
-    // Resolve compositor GPU before starting the decoder.
-    // ------------------------------------------------------------------
+    if !app.configured {
+        feedback.destroy();
+        bail!("Compositor did not send zwl_layer_surface_v1.configure within waiting time.");
+    }
 
-    let render_node = resolve_compositor_render_node(&mut queue, &mut app, &qh)
+    feedback.destroy();
+    let render_node = render_node_from_main_device(app.dmabuf_main_device.as_ref().unwrap())
         .context("Failed to resolve compositor render node")?;
-
-    // ------------------------------------------------------------------
-    // Decoder PingSource
-    // ------------------------------------------------------------------
-
-    let (ping, ping_source) = ping::make_ping().context("Failed to create decoder wakeup ping")?;
-    let notifier = crate::notifier::Notifier(ping);
-
-    let (error_ping, error_ping_source) =
-        ping::make_ping().context("Failed to create decoder error ping")?;
+    info!("Render node: {}", render_node.display());
 
     // ------------------------------------------------------------------
     // Start decoder
     // ------------------------------------------------------------------
+
+    let (ping, ping_source) = ping::make_ping().context("Failed to create decoder wakeup ping")?;
+    let notifier = crate::notifier::Notifier(ping);
+    let (error_ping, error_ping_source) =
+        ping::make_ping().context("Failed to create decoder error ping")?;
 
     let decoder = Decoder::start(
         video_path.to_string_lossy().as_ref(),
@@ -403,9 +368,6 @@ pub fn bootstrap_drm_pipeline(args: &mut Args) -> Result<BootstrapOutput> {
         Some(&render_node),
     )
     .context("Failed to start decoder")?;
-
-    info!("Decoder started: time_base={}", decoder.time_base);
-
     app.decoder = Some(decoder);
 
     Ok(BootstrapOutput {

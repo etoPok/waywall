@@ -14,7 +14,7 @@ fn main() -> anyhow::Result<()> {
     waywall::logging::init_test();
 
     let mut args = waywall::cli::args::parse();
-    let out = waywall::app::bootstrap::bootstrap_drm_pipeline(&mut args)?;
+    let out = waywall::app::bootstrap::bootstrap_drm(&mut args)?;
 
     let (mut event_loop, mut app, loop_signal) = waywall::runtime::event_loop::build_common_loop(
         out.app,
