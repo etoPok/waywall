@@ -44,22 +44,16 @@ cargo build --release
 
 ```bash
 # Basic
-./target/release/waywall /path/to/video.mp4
-
-# Or with cargo
-cargo run --release -- /path/to/video.mp4
+waywall /path/to/video.mp4
 
 # Specify a single output
-./target/release/waywall -o eDP-1 /path/to/video.mp4
+waywall -o eDP-1 /path/to/video.mp4
 
-# Specify multiple outputs (repeated flag)
-./target/release/waywall -o eDP-1 -o DP-3 /path/to/video.mp4
-
-# Specify multiple outputs (comma-separated)
+# Specify multiple outputs
 ./target/release/waywall -o eDP-1,DP-3 /path/to/video.mp4
 
-# With more verbose logging
-RUST_LOG=waywall=debug ./target/release/waywall video.mp4
+# Hardware-accelerated decoding via VA-API
+waywall -o eDP-1 --vaapi /path/to/video.mp4
 ```
 
 ### CLI Flags
@@ -68,6 +62,8 @@ RUST_LOG=waywall=debug ./target/release/waywall video.mp4
 |------|--------|---------|-------|
 | `-h, --help` | | | Shows help |
 | `-o, --output` | connector name | all outputs | Can be repeated or comma-separated (e.g. `-o eDP-1,DP-3`) |
+| `--vaapi` | | disabled | Enables VA-API hardware decoding; resolves the compositor render node from linux-dmabuf feedback (`zwp_linux_dmabuf_v1` v4) and runs the DRM pipeline. Falls back to software/GL with a warning if dmabuf is unavailable. Requires a VA-API capable FFmpeg/driver and `/dev/dri/renderD*` access |
+| `--no-gl` | | EGL enabled | Disables OpenGL/EGL rendering |
 | `<video_path>` | file path | required | Validated that it exists |
 
 ## Hyprland integration

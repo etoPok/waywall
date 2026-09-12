@@ -8,28 +8,47 @@ use tracing::{info, warn};
 
 use waywall::app::state::App;
 
-const DRM_TEST_FRAMES: u64 = 60;
+#[path = "common/test_args.rs"]
+mod test_args;
+
+#[path = "common/utils.rs"]
+mod utils;
 
 fn main() -> anyhow::Result<()> {
     waywall::logging::init_test();
 
-    let mut args = waywall::cli::args::parse();
-    let out = waywall::app::bootstrap::bootstrap_drm(&mut args)?;
+    let test_args = test_args::parse();
+    let frames = test_args.frames;
+    let mut prod_args = test_args.prod;
+    let bootstrap_output = if prod_args.use_egl_gl {
+        waywall::app::bootstrap::bootstrap_gl_egl(&mut prod_args)?
+    } else {
+        waywall::app::bootstrap::bootstrap_drm(&mut prod_args)?
+    };
 
     let (mut event_loop, mut app, loop_signal) = waywall::runtime::event_loop::build_common_loop(
-        out.app,
-        out.conn,
-        out.queue,
-        out.error_ping_source,
+        bootstrap_output.app,
+        bootstrap_output.conn,
+        bootstrap_output.queue,
+        bootstrap_output.error_ping_source,
     )
     .context("build_common_loop")?;
 
-    event_loop
-        .handle()
-        .insert_source(out.ping_source, |(), _, app| {
-            process_drm_test(app);
-        })
-        .map_err(|e| anyhow::anyhow!("Error registering decoder ping: {}", e))?;
+    if prod_args.use_egl_gl {
+        event_loop
+            .handle()
+            .insert_source(bootstrap_output.ping_source, move |(), _, app| {
+                process_egl_gl(app, frames);
+            })
+            .map_err(|e| anyhow::anyhow!("Error registering decoder ping: {}", e))?;
+    } else {
+        event_loop
+            .handle()
+            .insert_source(bootstrap_output.ping_source, move |(), _, app| {
+                process_drm(app, frames);
+            })
+            .map_err(|e| anyhow::anyhow!("Error registering decoder ping: {}", e))?;
+    }
 
     let grace_started = Rc::new(Cell::new(false));
     let grace_clone = grace_started.clone();
@@ -37,10 +56,10 @@ fn main() -> anyhow::Result<()> {
     event_loop
         .handle()
         .insert_source(grace_timer, move |_, _, app| {
-            if app.frame_count >= DRM_TEST_FRAMES && !grace_clone.get() {
+            if app.frame_count >= frames && !grace_clone.get() {
                 info!(
                     "DRM test: {} frames committed, waiting 2s for WlBuffer Release events...",
-                    DRM_TEST_FRAMES
+                    frames
                 );
                 grace_clone.set(true);
                 return calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(2));
@@ -58,18 +77,18 @@ fn main() -> anyhow::Result<()> {
                     "DRM test grace expired: total_buffers={}, in_use={}, free={}, frame_count={}",
                     total, in_use, free, app.frame_count
                 );
-                if total == DRM_TEST_FRAMES as usize && free == 0 {
+                if total == frames as usize && free == 0 {
                     warn!(
                         "No WlBuffer Release received in 2s (all {} buffers still in_use). \
                          WaylandSource may not be dispatching Release correctly; check Dispatch<WlBuffer> (wayland/dispatch.rs:137).",
                         total
                     );
-                } else if total == DRM_TEST_FRAMES as usize {
+                } else if total == frames as usize {
                     info!("Wayland dispatch OK: {} of {} buffers released", free, total);
                 } else {
                     warn!(
                         "Unexpected buffer pool state: expected {} buffers, got {}",
-                        DRM_TEST_FRAMES, total
+                        frames, total
                     );
                 }
                 if let Some(ref signal) = app.loop_signal {
@@ -82,10 +101,6 @@ fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("Error registering DRM grace timer: {}", e))?;
 
     app.last_stats_time = Some(std::time::Instant::now());
-    info!(
-        "DRM test event loop started (target {} frames). Ctrl+C to exit.",
-        DRM_TEST_FRAMES
-    );
 
     unsafe { waywall::runtime::signals::ctrlc_setup(loop_signal) };
 
@@ -94,12 +109,11 @@ fn main() -> anyhow::Result<()> {
         .context("Error in DRM event loop")?;
 
     drop(app);
-    info!("Clean exit (DRM test).");
     Ok(())
 }
 
-fn process_drm_test(app: &mut App) {
-    if app.frame_count >= DRM_TEST_FRAMES {
+fn process_egl_gl(app: &mut App, max_frames: u64) {
+    if app.frame_count >= max_frames {
         return;
     }
 
@@ -111,13 +125,135 @@ fn process_drm_test(app: &mut App) {
 
     unsafe {
         info!(
-            "process_drm_frame: read slot pts={} pkt_dts={} best_effort={} w={} h={} fmt={} queue_len={}",
+            "process_drm_frame: read slot pts={} pkt_dts={} best_effort={} w={} h={} fmt={} ({}) queue_len={}",
             (*frame_ptr).pts,
             (*frame_ptr).pkt_dts,
             (*frame_ptr).best_effort_timestamp,
             (*frame_ptr).width,
             (*frame_ptr).height,
             (*frame_ptr).format,
+            utils::pix_fmt_name((*frame_ptr).format),
+            app.frame_queue.len()
+        );
+    }
+
+    use std::time::Instant;
+    use waywall::timing::Timing;
+
+    let now = Instant::now();
+    let pts = unsafe { (*frame_ptr).pts };
+
+    if app.timing.is_none() {
+        if let Some(ref decoder) = app.decoder {
+            app.timing = Some(Timing::new(decoder.time_base));
+            info!("Timing initialized: time_base={}", decoder.time_base);
+        }
+    }
+
+    if let Some(last_pts) = app.last_pts {
+        if pts < last_pts - 100 {
+            if let Some(ref decoder) = app.decoder {
+                app.timing = Some(Timing::new(decoder.time_base));
+                info!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
+            }
+        }
+    }
+    app.last_pts = Some(pts);
+
+    if let Some(ref timing) = app.timing {
+        if timing.should_drop(pts, now) {
+            app.frame_queue.commit_read();
+            warn!("Frame dropped (pts={})", pts);
+            return;
+        }
+
+        let render_time = timing.render_time(pts);
+        if now < render_time {
+            let sleep_dur = render_time - now;
+            std::thread::sleep(sleep_dur);
+        }
+    }
+
+    use ffmpeg_sys_next::AVPixelFormat;
+    use waywall::shader::Shader;
+
+    let fmt = unsafe { (*frame_ptr).format as u32 };
+    let shader: &Shader;
+    if fmt == AVPixelFormat::AV_PIX_FMT_YUV420P as i32 as u32 {
+        shader = app.shader_yuv.as_ref().unwrap();
+    } else if fmt == AVPixelFormat::AV_PIX_FMT_NV12 as i32 as u32 {
+        shader = app.shader_nv12.as_ref().unwrap();
+    } else {
+        warn!("Unsupported pixel format, skipping frame");
+        app.frame_queue.commit_read();
+        app.frame_count += 1;
+        return;
+    }
+
+    let quad = app.quad.as_ref().unwrap();
+
+    unsafe {
+        for rs in app.render_states.iter_mut() {
+            waywall::render::egl::eglMakeCurrent(
+                rs.egl_display,
+                rs.egl_surface,
+                rs.egl_surface,
+                rs.egl_context,
+            );
+
+            if rs.textures.is_empty() {
+                rs.textures = waywall::render::frame::init_textures(rs, frame_ptr);
+                info!(
+                    "Textures created for monitor ({} textures)",
+                    rs.textures.len()
+                );
+            }
+
+            waywall::render::frame::upload_frame(&rs.textures, frame_ptr);
+
+            gl::Viewport(0, 0, rs.width, rs.height);
+            gl::ClearColor(0.0, 0.0, 0.0, 1.0);
+            gl::Clear(gl::COLOR_BUFFER_BIT);
+
+            shader.use_program();
+
+            let num_textures = rs.textures.len();
+            for i in 0..num_textures {
+                gl::ActiveTexture(gl::TEXTURE0 + i as u32);
+                gl::BindTexture(gl::TEXTURE_2D, rs.textures[i]);
+            }
+
+            quad.draw();
+
+            waywall::render::egl::eglSwapBuffers(rs.egl_display, rs.egl_surface);
+        }
+    }
+
+    app.frame_queue.commit_read();
+    app.frame_count += 1;
+}
+
+fn process_drm(app: &mut App, max_frames: u64) {
+    if app.frame_count >= max_frames {
+        return;
+    }
+
+    let frame_ptr_opt = app.frame_queue.try_get_read_slot();
+    let frame_ptr = match frame_ptr_opt {
+        Some(ptr) => ptr,
+        None => return,
+    };
+
+    unsafe {
+        info!(
+            "process_drm_frame: read slot pts={} pkt_dts={} best_effort={} w={} h={} fmt={} ({}) queue_len={}",
+            (*frame_ptr).pts,
+            (*frame_ptr).pkt_dts,
+            (*frame_ptr).best_effort_timestamp,
+            (*frame_ptr).width,
+            (*frame_ptr).height,
+            (*frame_ptr).format,
+            utils::pix_fmt_name((*frame_ptr).format),
             app.frame_queue.len()
         );
     }
@@ -130,10 +266,6 @@ fn process_drm_test(app: &mut App) {
     let now = Instant::now();
     const AV_NOPTS_VALUE: i64 = 0x8000000000000000u64 as i64;
     let pts = unsafe { (*frame_ptr).pts };
-    let is_nop = pts == AV_NOPTS_VALUE;
-    if is_nop {
-        warn!("Frame with AV_NOPTS_VALUE (no pts), skipping timing");
-    }
 
     if app.timing.is_none() {
         if let Some(ref decoder) = app.decoder {
@@ -142,16 +274,19 @@ fn process_drm_test(app: &mut App) {
         }
     }
 
-    if let Some(last_pts) = app.last_pts {
-        if !is_nop && last_pts != AV_NOPTS_VALUE && pts < last_pts - 100 {
-            if let Some(ref decoder) = app.decoder {
-                app.timing = Some(Timing::new(decoder.time_base));
-                info!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
+    let is_nop = pts == AV_NOPTS_VALUE;
+    if is_nop {
+        warn!("Frame with AV_NOPTS_VALUE (no pts), skipping timing");
+    } else {
+        if let Some(last_pts) = app.last_pts {
+            if last_pts != AV_NOPTS_VALUE && pts < last_pts - 100 {
+                if let Some(ref decoder) = app.decoder {
+                    app.timing = Some(Timing::new(decoder.time_base));
+                    info!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
+                }
             }
+            app.last_pts = Some(pts);
         }
-    }
-    if !is_nop {
-        app.last_pts = Some(pts);
     }
 
     if let Some(ref timing) = app.timing {
@@ -183,7 +318,7 @@ fn process_drm_test(app: &mut App) {
                 return;
             }
         };
-        let frames = match decoder.hw_frames_ctx() {
+        let hw_frames_ctx = match decoder.hw_frames_ctx() {
             Some(f) => f,
             None => {
                 error!("VAAPI converter: hw_frames_ctx not available");
@@ -194,7 +329,7 @@ fn process_drm_test(app: &mut App) {
                 return;
             }
         };
-        match unsafe { VaapiConverter::new(frames.as_ptr(), w, h) } {
+        match unsafe { VaapiConverter::new(hw_frames_ctx.as_ptr(), w, h) } {
             Ok(converter) => {
                 app.converter = Some(converter);
             }

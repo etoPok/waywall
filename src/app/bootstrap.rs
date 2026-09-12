@@ -5,9 +5,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Ok, Result};
 use calloop::ping;
+use nix::errno::Errno;
+use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use tracing::{info, warn};
+use wayland_backend::client::WaylandError;
 use wayland_client::protocol::wl_output::WlOutput;
-use wayland_client::{globals::registry_queue_init, Connection};
+use wayland_client::{globals::registry_queue_init, Connection, EventQueue, QueueHandle};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
@@ -17,6 +20,7 @@ use crate::drm_node::render_node_from_main_device;
 use crate::render::egl::init_egl;
 use crate::render::state::RenderState;
 use crate::shader::{QuadGeometry, Shader};
+use crate::wayland::surfaces::create_surface;
 
 use super::state::{App, Monitor};
 
@@ -29,15 +33,14 @@ pub struct BootstrapOutput {
 }
 
 pub fn bootstrap(args: &mut Args) -> Result<BootstrapOutput> {
-    if args.use_vaapi {
-        bootstrap_drm(args)
-    } else {
+    if args.use_egl_gl {
         bootstrap_gl_egl(args)
+    } else {
+        bootstrap_drm(args)
     }
 }
 
 pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
-    // Validate file
     let video_path = Path::new(&args.video_path);
     if !video_path.exists() {
         anyhow::bail!("Video file does not exist: {}", video_path.display());
@@ -73,14 +76,13 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
         warn!("wl_viewporter not available, fallback to logical size for EGL");
     }
 
+    let mut dmabuf: Option<ZwpLinuxDmabufV1> = None;
     if args.use_vaapi {
-        let dmabuf: Option<ZwpLinuxDmabufV1> = globals.bind(&qh, 1..=4, ()).ok();
-        if dmabuf.is_none() {
-            warn!("zwp_linux_dmabuf_v1 not availble, zero-copy dmabuf path disabled. Using software fallback");
-            args.use_vaapi = false;
-            args.use_gl = true;
-        }
+        dmabuf = Some(globals.bind(&qh, 4..=4, ()).context(
+            "Compositor does not support zwp_linux_dmabuf_v1 v4 (required for drm pipeline)",
+        )?);
     }
+    let feedback = dmabuf.as_ref().map(|d| d.get_default_feedback(&qh, ()));
 
     // ------------------------------------------------------------------
     // Initial state
@@ -89,6 +91,7 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
     let mut app = App::new(conn.clone(), compositor, layer_shell);
     app.qh = Some(qh.clone());
     app.viewporter = viewporter;
+    app.dmabuf = dmabuf;
 
     let registry = globals.registry();
     for global in globals.contents().clone_list() {
@@ -103,79 +106,42 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
         .roundtrip(&mut app)
         .context("Error in initial roundtrip")?;
 
-    // Filter by output name if requested
-    if !args.outputs.is_empty() {
-        let invalid_names: Vec<&String> = args
-            .outputs
-            .iter()
-            .filter(|out| {
-                !app.monitors
-                    .iter()
-                    .any(|m| m.name.as_deref().is_some_and(|name| name == *out))
-            })
-            .collect();
+    filter_outputs_by_name(&mut app.monitors, &args.outputs)?;
+    create_layer_shell_surfaces(&mut app, &qh);
 
-        if !invalid_names.is_empty() {
-            anyhow::bail!(
-                "The following output names do not exist: {:?}",
-                invalid_names
-            );
-        }
-
-        app.monitors.retain(|m| {
-            m.name
-                .as_deref()
-                .is_some_and(|name| args.outputs.iter().any(|out| out == name))
-        });
-    }
-
-    if app.monitors.is_empty() {
-        anyhow::bail!(
-            "No outputs detected. Make sure output names match. \
-             Requested: {:?}",
-            args.outputs
-        );
-    }
-
-    // ------------------------------------------------------------------
-    // Create layer-shell surfaces
-    // ------------------------------------------------------------------
-
-    for (i, monitor) in app.monitors.iter_mut().enumerate() {
-        if monitor.physical_width == 0 || monitor.physical_height == 0 {
-            warn!("Output dimensions not detected, using 1920x1080 as fallback");
-            monitor.physical_width = 1920;
-            monitor.physical_height = 1080;
-        }
-
-        App::create_surfaces(
-            &app.compositor,
-            &app.layer_shell,
-            app.viewporter.as_ref(),
-            &qh,
-            monitor,
-            i,
-        );
-    }
-
-    let mut configure_attempts = 0;
-    while !app.configured && configure_attempts < 50 {
-        queue
-            .blocking_dispatch(&mut app)
-            .context("Error waiting for configure")?;
-        configure_attempts += 1;
-    }
+    wait_for_wayland_events_state(
+        &conn,
+        &mut queue,
+        &mut app,
+        Duration::from_secs(2),
+        |state| state.configured && (!args.use_vaapi || state.dmabuf_main_device.is_some()),
+    )?;
 
     if !app.configured {
-        anyhow::bail!(
-            "Compositor did not send configuration after {} attempts.",
-            configure_attempts
-        );
+        if let Some(fb) = feedback {
+            fb.destroy();
+        }
+        bail!("Compositor did not send zwl_layer_surface_v1.configure within waiting time.");
     }
 
-    if args.use_gl {
-        initialize_gl_egl(&mut app, wl_display_ptr)?;
-    }
+    let render_node = if args.use_vaapi {
+        if app.dmabuf_main_device.is_none() {
+            bail!(
+            "Compositor did not send zwp_linux_dmabuf_feedback_v1.main_device within waiting time."
+          );
+        }
+
+        feedback.unwrap().destroy();
+
+        Some(
+            render_node_from_main_device(app.dmabuf_main_device.as_ref().unwrap())
+                .context("render_node_from_main_device failed")?,
+        )
+    } else {
+        None
+    };
+
+    initialize_gl_egl(&mut app, wl_display_ptr)?;
 
     // ------------------------------------------------------------------
     // Start decoder
@@ -192,7 +158,7 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
         notifier,
         error_ping,
         args.use_vaapi,
-        None,
+        render_node.as_deref(),
     )
     .context("Failed to start decoder")?;
     app.decoder = Some(decoder);
@@ -207,7 +173,6 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
 }
 
 pub fn bootstrap_drm(args: &mut Args) -> Result<BootstrapOutput> {
-    // Validate file
     let video_path = Path::new(&args.video_path);
     if !video_path.exists() {
         anyhow::bail!("Video file does not exist: {}", video_path.display());
@@ -264,73 +229,20 @@ pub fn bootstrap_drm(args: &mut Args) -> Result<BootstrapOutput> {
         .roundtrip(&mut app)
         .context("Error in initial roundtrip")?;
 
-    // Filter by output name if requested
-    if !args.outputs.is_empty() {
-        let invalid_names: Vec<&String> = args
-            .outputs
-            .iter()
-            .filter(|out| {
-                !app.monitors
-                    .iter()
-                    .any(|m| m.name.as_deref().is_some_and(|name| name == *out))
-            })
-            .collect();
+    filter_outputs_by_name(&mut app.monitors, &args.outputs)?;
+    create_layer_shell_surfaces(&mut app, &qh);
 
-        if !invalid_names.is_empty() {
-            anyhow::bail!(
-                "The following output names do not exist: {:?}",
-                invalid_names
-            );
-        }
+    wait_for_wayland_events_state(
+        &conn,
+        &mut queue,
+        &mut app,
+        Duration::from_secs(2),
+        |state| state.configured && state.dmabuf_main_device.is_some(),
+    )?;
 
-        app.monitors.retain(|m| {
-            m.name
-                .as_deref()
-                .is_some_and(|name| args.outputs.iter().any(|out| out == name))
-        });
-    }
-
-    if app.monitors.is_empty() {
-        anyhow::bail!(
-            "No outputs detected. Make sure output names match. \
-             Requested: {:?}",
-            args.outputs
-        );
-    }
-
-    // ------------------------------------------------------------------
-    // Create layer-shell surfaces
-    // ------------------------------------------------------------------
-
-    for (i, monitor) in app.monitors.iter_mut().enumerate() {
-        if monitor.physical_width == 0 || monitor.physical_height == 0 {
-            warn!("Output dimensions not detected, using 1920x1080 as fallback");
-            monitor.physical_width = 1920;
-            monitor.physical_height = 1080;
-        }
-
-        App::create_surfaces(
-            &app.compositor,
-            &app.layer_shell,
-            app.viewporter.as_ref(),
-            &qh,
-            monitor,
-            i,
-        );
-    }
-
-    // ------------------------------------------------------------------
-    // Comprobar que los eventos se hayan despachado
-    // ------------------------------------------------------------------
-
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while !app.configured || app.dmabuf_main_device.is_none() {
-        if Instant::now() >= deadline {
-            break;
-        }
-        queue
-            .blocking_dispatch(&mut app)
-            .context("Error waiting for configure")?;
+    if !app.configured {
+        feedback.destroy();
+        bail!("Compositor did not send zwl_layer_surface_v1.configure within waiting time.");
     }
 
     if app.dmabuf_main_device.is_none() {
@@ -338,11 +250,6 @@ pub fn bootstrap_drm(args: &mut Args) -> Result<BootstrapOutput> {
         bail!(
             "Compositor did not send zwp_linux_dmabuf_feedback_v1.main_device within waiting time."
         );
-    }
-
-    if !app.configured {
-        feedback.destroy();
-        bail!("Compositor did not send zwl_layer_surface_v1.configure within waiting time.");
     }
 
     feedback.destroy();
@@ -443,6 +350,134 @@ fn initialize_gl_egl(app: &mut App, wl_display_ptr: *mut c_void) -> Result<(), a
     app.shader_yuv = Some(shader_yuv);
     app.shader_nv12 = Some(shader_nv12);
     app.quad = Some(quad);
+
+    Ok(())
+}
+
+fn filter_outputs_by_name(monitors: &mut Vec<Monitor>, requested_outputs: &[String]) -> Result<()> {
+    if !requested_outputs.is_empty() {
+        let invalid_names: Vec<&String> = requested_outputs
+            .iter()
+            .filter(|out| {
+                !monitors
+                    .iter()
+                    .any(|m| m.name.as_deref().is_some_and(|name| name == *out))
+            })
+            .collect();
+
+        if !invalid_names.is_empty() {
+            anyhow::bail!(
+                "The following output names do not exist: {:?}",
+                invalid_names
+            );
+        }
+
+        monitors.retain(|m| {
+            m.name
+                .as_deref()
+                .is_some_and(|name| requested_outputs.iter().any(|out| out == name))
+        });
+    }
+
+    if monitors.is_empty() {
+        anyhow::bail!(
+            "No outputs detected. Make sure output names match. \
+             Requested: {:?}",
+            requested_outputs
+        );
+    }
+
+    Ok(())
+}
+
+fn create_layer_shell_surfaces(app: &mut App, qh: &QueueHandle<App>) {
+    let (compositor, layer_shell, viewporter, monitors) = (
+        &app.compositor,
+        &app.layer_shell,
+        app.viewporter.as_ref(),
+        &mut app.monitors,
+    );
+
+    for (i, monitor) in monitors.iter_mut().enumerate() {
+        if monitor.physical_width == 0 || monitor.physical_height == 0 {
+            warn!("Output dimensions not detected, using 1920x1080 as fallback");
+            monitor.physical_width = 1920;
+            monitor.physical_height = 1080;
+        }
+
+        create_surface(compositor, layer_shell, viewporter, qh, monitor, i);
+    }
+}
+
+pub fn wait_for_wayland_events_state<State, F>(
+    _conn: &Connection,
+    queue: &mut EventQueue<State>,
+    state: &mut State,
+    timeout: Duration,
+    mut is_finished: F,
+) -> anyhow::Result<()>
+where
+    F: FnMut(&State) -> bool,
+{
+    let deadline = Instant::now() + timeout;
+
+    queue
+        .flush()
+        .context("Error flushing pending outgoing events")?;
+
+    while !is_finished(state) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+
+        let read_guard = match queue.prepare_read() {
+            Some(guard) => guard,
+            None => {
+                queue
+                    .dispatch_pending(state)
+                    .context("Error in dispatch_pending")?;
+                continue;
+            }
+        };
+
+        // connection_fd() returns a BorrowedFd, which implements AsFd for nix.
+        let fd = read_guard.connection_fd();
+        let mut poll_fd = PollFd::new(fd, PollFlags::POLLIN);
+
+        match poll(
+            std::slice::from_mut(&mut poll_fd),
+            PollTimeout::try_from(remaining).unwrap_or(PollTimeout::MAX),
+        ) {
+            std::result::Result::Ok(0) => {
+                continue;
+            }
+            std::result::Result::Ok(_) => {
+                // Events are ready. Verify that the POLLIN flag is set (for safety).
+                let revents = poll_fd.revents().unwrap_or_else(PollFlags::empty);
+                if revents.contains(PollFlags::POLLIN) {
+                    match read_guard.read() {
+                        std::result::Result::Ok(_) => {}
+                        Err(WaylandError::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            // "Spurious wakeup": the kernel woke the thread but there is no real data yet. Safe to ignore.
+                        }
+                        Err(e) => anyhow::bail!("Error reading Wayland events: {}", e),
+                    }
+                }
+            }
+            Err(Errno::EINTR) => {
+                // possible interrupt due to a system signal
+                continue;
+            }
+            Err(e) => {
+                anyhow::bail!("Error in Wayland poll: {}", e);
+            }
+        }
+
+        queue
+            .dispatch_pending(state)
+            .context("Error in dispatch_pending after reading")?;
+    }
 
     Ok(())
 }

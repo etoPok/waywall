@@ -44,3 +44,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # POSIX signals for clean shutdown
 libc = "0.2"
+
+nix = { version = "0.31", features = ["poll"] }

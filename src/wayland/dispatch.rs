@@ -190,7 +190,6 @@ impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for App {
             device,
         } = event
         {
-            info!("dmabuf feedback main_device: {:?}", device);
             state.dmabuf_main_device = Some(device);
         }
     }

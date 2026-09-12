@@ -5,18 +5,17 @@ pub struct Args {
     pub video_path: String,
     pub outputs: Vec<String>,
     pub use_vaapi: bool,
-    pub use_gl: bool,
+    pub use_egl_gl: bool,
 }
 
 fn print_usage(program: &str) {
     eprintln!("Usage: {program} [OPTIONS] <path-to-video>");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  -o, --output <name>  Output connector(s) to use (e.g. eDP-1, DP-3)");
-    eprintln!("                       Can be specified multiple times or comma-separated");
-    eprintln!("  --vaapi              Enable hardware-accelerated decoding (VA-API)");
-    eprintln!("  --no-gl              Disable OpenGL/EGL rendering (default is false)");
-    eprintln!("  -h, --help           Show this help");
+    eprintln!("  -o, --output <name>        Output connector(s) to use (e.g. eDP-1, DP-3)");
+    eprintln!("  --vaapi                    Enable hardware-accelerated decoding (VA-API)");
+    eprintln!("  --backend <drm|egl-gl>     Test backend to exercise (default: drm)");
+    eprintln!("  -h, --help                 Show this help");
     eprintln!();
     eprintln!("Example: {program} path/to/wallpaper.mp4");
     eprintln!("         {program} -o eDP-1 path/to/wallpaper.mp4");
@@ -35,7 +34,7 @@ where
     let mut video_path: Option<String> = None;
     let mut outputs: Vec<String> = Vec::new();
     let mut use_vaapi: bool = false;
-    let mut use_gl: bool = true;
+    let mut use_egl_gl: bool = true;
 
     let mut i = 1;
     while i < args.len() {
@@ -58,8 +57,20 @@ where
             "--vaapi" => {
                 use_vaapi = true;
             }
-            "--no-gl" => {
-                use_gl = false;
+            "--backend" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("error: --backend requires a value (drm|egl-gl)".into());
+                }
+                match args[i].as_str() {
+                    "drm" => use_egl_gl = false,
+                    "egl-gl" => use_egl_gl = true,
+                    other => {
+                        return Err(format!(
+                            "error: invalid --backend '{other}' (expected drm|egl-gl)"
+                        ));
+                    }
+                }
             }
             _ => {
                 if video_path.is_none() {
@@ -81,7 +92,7 @@ where
         video_path,
         outputs,
         use_vaapi,
-        use_gl,
+        use_egl_gl,
     })
 }
 
@@ -115,7 +126,7 @@ mod tests {
         assert_eq!(a.video_path, "video.mp4");
         assert!(a.outputs.is_empty());
         assert!(!a.use_vaapi);
-        assert!(a.use_gl);
+        assert!(a.use_egl_gl);
     }
 
     #[test]
@@ -140,7 +151,7 @@ mod tests {
     fn parse_flags_vaapi_no_gl() {
         let a = parse_from(args(&["waywall", "--vaapi", "--no-gl", "v.mp4"])).unwrap();
         assert!(a.use_vaapi);
-        assert!(!a.use_gl);
+        assert!(!a.use_egl_gl);
     }
 
     #[test]

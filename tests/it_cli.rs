@@ -12,5 +12,5 @@ fn integration_cli_via_lib() {
     assert_eq!(args.video_path, "video.mp4");
     assert_eq!(args.outputs, vec!["eDP-1", "DP-3"]);
     assert!(args.use_vaapi);
-    assert!(args.use_gl);
+    assert!(args.use_egl_gl);
 }

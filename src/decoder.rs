@@ -138,7 +138,7 @@ impl Decoder {
         notifier: Notifier,
         error_ping: ping::Ping,
         use_vaapi: bool,
-        vaapi_drm_node: Option<&Path>,
+        render_node: Option<&Path>,
     ) -> Result<Self> {
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = running.clone();
@@ -198,7 +198,7 @@ impl Decoder {
         }
 
         if use_vaapi {
-            let Some(drm_node) = vaapi_drm_node else {
+            let Some(drm_node) = render_node else {
                 unsafe {
                     avcodec_free_context(&mut codec_ctx);
                     avformat_close_input(&mut fmt_ctx);
