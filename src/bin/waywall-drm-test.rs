@@ -203,7 +203,7 @@ fn process_egl_gl(app: &mut App, max_frames: u64) {
             );
 
             if rs.textures.is_empty() {
-                rs.textures = waywall::render::frame::init_textures(rs, frame_ptr);
+                rs.textures = waywall::render::frame::init_textures(frame_ptr);
                 info!(
                     "Textures created for monitor ({} textures)",
                     rs.textures.len()

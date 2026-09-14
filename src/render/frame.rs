@@ -2,12 +2,8 @@ use ffmpeg_sys_next::{AVFrame, AVPixelFormat};
 use gl::types::*;
 use tracing::warn;
 
-use crate::render::egl::{eglMakeCurrent, eglSwapBuffers};
-use crate::render::state::RenderState;
-use crate::shader::{QuadGeometry, Shader};
-
 #[allow(clippy::missing_safety_doc)]
-pub unsafe fn init_textures(_rs: &RenderState, frame: *mut AVFrame) -> Vec<GLuint> {
+pub unsafe fn init_textures(frame: *mut AVFrame) -> Vec<GLuint> {
     let fmt = (*frame).format;
     let w = (*frame).width;
     let h = (*frame).height;
@@ -16,8 +12,8 @@ pub unsafe fn init_textures(_rs: &RenderState, frame: *mut AVFrame) -> Vec<GLuin
         let mut textures: [GLuint; 3] = [0; 3];
         gl::GenTextures(3, textures.as_mut_ptr());
 
-        for i in 0..3 {
-            gl::BindTexture(gl::TEXTURE_2D, textures[i]);
+        for (i, &texture) in textures.iter().enumerate() {
+            gl::BindTexture(gl::TEXTURE_2D, texture);
             let (tw, th) = if i == 0 { (w, h) } else { (w / 2, h / 2) };
             gl::TexImage2D(
                 gl::TEXTURE_2D,
@@ -156,30 +152,4 @@ pub unsafe fn upload_frame(textures: &[GLuint], frame: *mut AVFrame) {
     } else {
         warn!("Cannot upload frame: unsupported pixel format");
     }
-}
-
-#[allow(clippy::missing_safety_doc)]
-pub unsafe fn render_only(rs: &mut RenderState, shader: &Shader, quad: &QuadGeometry) {
-    eglMakeCurrent(
-        rs.egl_display,
-        rs.egl_surface,
-        rs.egl_surface,
-        rs.egl_context,
-    );
-
-    gl::Viewport(0, 0, rs.width, rs.height);
-    gl::ClearColor(0.0, 0.0, 0.0, 1.0);
-    gl::Clear(gl::COLOR_BUFFER_BIT);
-
-    shader.use_program();
-
-    let num_textures = rs.textures.len();
-    for i in 0..num_textures {
-        gl::ActiveTexture(gl::TEXTURE0 + i as u32);
-        gl::BindTexture(gl::TEXTURE_2D, rs.textures[i]);
-    }
-
-    quad.draw();
-
-    eglSwapBuffers(rs.egl_display, rs.egl_surface);
 }

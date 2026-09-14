@@ -90,8 +90,8 @@ where
     event_loop
         .run(None, &mut app, |_app| {})
         .context("Error in event loop")?;
+
     drop(app);
-    info!("Clean exit.");
     Ok(())
 }
 
@@ -108,7 +108,7 @@ pub fn run(
         queue,
         ping_source,
         error_ping_source,
-        process_frame,
+        process_egl_gl,
     )
 }
 
@@ -129,7 +129,7 @@ pub fn run_drm(
     )
 }
 
-fn process_frame(app: &mut App) {
+fn process_egl_gl(app: &mut App) {
     let now = Instant::now();
 
     let frame_ptr_opt = app.frame_queue.try_get_read_slot();
@@ -196,7 +196,7 @@ fn process_frame(app: &mut App) {
             );
 
             if rs.textures.is_empty() {
-                rs.textures = crate::render::frame::init_textures(rs, frame_ptr);
+                rs.textures = crate::render::frame::init_textures(frame_ptr);
                 info!(
                     "Textures created for monitor ({} textures)",
                     rs.textures.len()

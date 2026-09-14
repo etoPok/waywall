@@ -162,7 +162,6 @@ impl Default for QuadGeometry {
     }
 }
 
-#[allow(dead_code)]
 impl QuadGeometry {
     pub fn new() -> Self {
         #[rustfmt::skip]
