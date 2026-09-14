@@ -6,8 +6,8 @@ fn main() -> Result<()> {
     let mut args = waywall::cli::args::parse();
     let bootstrap_output = waywall::app::bootstrap::bootstrap(&mut args)?;
 
-    if args.use_egl_gl {
-        waywall::runtime::event_loop::run(
+    if args.use_hwdec {
+        waywall::runtime::event_loop::run_drm(
             bootstrap_output.app,
             bootstrap_output.conn,
             bootstrap_output.queue,
@@ -15,7 +15,7 @@ fn main() -> Result<()> {
             bootstrap_output.error_ping_source,
         )
     } else {
-        waywall::runtime::event_loop::run_drm(
+        waywall::runtime::event_loop::run(
             bootstrap_output.app,
             bootstrap_output.conn,
             bootstrap_output.queue,

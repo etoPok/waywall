@@ -46,14 +46,11 @@ cargo build --release
 # Basic
 waywall /path/to/video.mp4
 
-# Specify a single output
-waywall -o eDP-1 /path/to/video.mp4
-
 # Specify multiple outputs
 ./target/release/waywall -o eDP-1,DP-3 /path/to/video.mp4
 
 # Hardware-accelerated decoding via VA-API
-waywall -o eDP-1 --vaapi /path/to/video.mp4
+waywall -o eDP-1 --hwdec vaapi /path/to/video.mp4
 ```
 
 ### CLI Flags
@@ -62,18 +59,8 @@ waywall -o eDP-1 --vaapi /path/to/video.mp4
 |------|--------|---------|-------|
 | `-h, --help` | | | Shows help |
 | `-o, --output` | connector name | all outputs | Can be repeated or comma-separated (e.g. `-o eDP-1,DP-3`) |
-| `--vaapi` | | disabled | Enables VA-API hardware decoding; resolves the compositor render node from linux-dmabuf feedback (`zwp_linux_dmabuf_v1` v4) and runs the DRM pipeline. Falls back to software/GL with a warning if dmabuf is unavailable. Requires a VA-API capable FFmpeg/driver and `/dev/dri/renderD*` access |
-| `--no-gl` | | EGL enabled | Disables OpenGL/EGL rendering |
-| `<video_path>` | file path | required | Validated that it exists |
-
-## Hyprland integration
-
-Add to `~/.config/hypr/hyprland.conf`:
-
-```conf
-# Start wallpaper when Hyprland boots
-exec-once = /path/to/waywall /path/to/video.mp4
-```
+| `--hwdec` | `no` or `vaapi` | `no` | Enables hardware-accelerated decoding. `vaapi` uses the DRM pipeline resolving the compositor render node via VA-API; `no` uses software decoding with EGL/GL rendering. Requires a VA-API capable FFmpeg/driver and `/dev/dri/renderD*` access |
+| `<video_path>` | file path | required | mp4 video path |
 
 ## Recommended video formats
 

@@ -62,16 +62,16 @@ impl DrmFrame {
                 anyhow::bail!("av_hwframe_map to DRM_PRIME failed: {}", map_ret);
             }
 
-            let desc = (**drm_frame).data[0] as *mut AVDRMFrameDescriptor;
-            if desc.is_null() {
+            let drm_frame_descriptor = (**drm_frame).data[0] as *mut AVDRMFrameDescriptor;
+            if drm_frame_descriptor.is_null() {
                 av_frame_free(drm_frame);
                 anyhow::bail!("AVDRMFrameDescriptor is null after map");
             }
 
             let mut layers = Vec::new();
-            for layer_idx in 0..(*desc).nb_layers {
+            for layer_idx in 0..(*drm_frame_descriptor).nb_layers {
                 let mut planes = Vec::new();
-                let layer = &(*desc).layers[layer_idx as usize];
+                let layer = &(*drm_frame_descriptor).layers[layer_idx as usize];
 
                 debug!(
                     "layer[{}] format {:#x} ({}), nb_planes={}",
@@ -82,11 +82,11 @@ impl DrmFrame {
                     let plane = &layer.planes[plane_idx as usize];
                     let obj_idx = plane.object_index as usize;
 
-                    if obj_idx >= (*desc).nb_objects as usize {
+                    if obj_idx >= (*drm_frame_descriptor).nb_objects as usize {
                         av_frame_free(drm_frame);
                         anyhow::bail!("plane object_index out of range");
                     }
-                    let obj = &(*desc).objects[obj_idx];
+                    let obj = &(*drm_frame_descriptor).objects[obj_idx];
 
                     debug!(
                         "object[{}]: fd={}, size={}, modifier={:#x} plane[{}] offset={} pitch={}",
@@ -122,7 +122,7 @@ impl DrmFrame {
 
             let width = (*frame).width;
             let height = (*frame).height;
-            let format = (*desc).layers[0].format;
+            let format = (*drm_frame_descriptor).layers[0].format;
 
             info!(
                 "Mapped VAAPI frame pix_fmt={} ({}) to DRM_PRIME: {}x{} drm_fourcc={:#x} ({}) layers={}",

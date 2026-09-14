@@ -4,8 +4,7 @@ use std::env;
 pub struct Args {
     pub video_path: String,
     pub outputs: Vec<String>,
-    pub use_vaapi: bool,
-    pub use_egl_gl: bool,
+    pub use_hwdec: bool,
 }
 
 fn print_usage(program: &str) {
@@ -13,8 +12,7 @@ fn print_usage(program: &str) {
     eprintln!();
     eprintln!("Options:");
     eprintln!("  -o, --output <name>        Output connector(s) to use (e.g. eDP-1, DP-3)");
-    eprintln!("  --vaapi                    Enable hardware-accelerated decoding (VA-API)");
-    eprintln!("  --backend <drm|egl-gl>     Test backend to exercise (default: drm)");
+    eprintln!("  --hwdec <no|vaapi>         Enable hardware-accelerated decoding (VA-API)");
     eprintln!("  -h, --help                 Show this help");
     eprintln!();
     eprintln!("Example: {program} path/to/wallpaper.mp4");
@@ -33,8 +31,7 @@ where
 
     let mut video_path: Option<String> = None;
     let mut outputs: Vec<String> = Vec::new();
-    let mut use_vaapi: bool = false;
-    let mut use_egl_gl: bool = true;
+    let mut use_hwdec: bool = true;
 
     let mut i = 1;
     while i < args.len() {
@@ -54,20 +51,17 @@ where
                     }
                 }
             }
-            "--vaapi" => {
-                use_vaapi = true;
-            }
-            "--backend" => {
+            "--hwdec" => {
                 i += 1;
                 if i >= args.len() {
-                    return Err("error: --backend requires a value (drm|egl-gl)".into());
+                    return Err("error: --backend requires a value (no|vaapi)".into());
                 }
                 match args[i].as_str() {
-                    "drm" => use_egl_gl = false,
-                    "egl-gl" => use_egl_gl = true,
+                    "no" => use_hwdec = false,
+                    "vaapi" => use_hwdec = true,
                     other => {
                         return Err(format!(
-                            "error: invalid --backend '{other}' (expected drm|egl-gl)"
+                            "error: invalid --hwdec '{other}' (expected no|vaapi)"
                         ));
                     }
                 }
@@ -91,8 +85,7 @@ where
     Ok(Args {
         video_path,
         outputs,
-        use_vaapi,
-        use_egl_gl,
+        use_hwdec,
     })
 }
 
@@ -125,8 +118,7 @@ mod tests {
         let a = parse_from(args(&["waywall", "video.mp4"])).unwrap();
         assert_eq!(a.video_path, "video.mp4");
         assert!(a.outputs.is_empty());
-        assert!(!a.use_vaapi);
-        assert!(a.use_egl_gl);
+        assert!(!a.use_hwdec);
     }
 
     #[test]
@@ -149,9 +141,25 @@ mod tests {
 
     #[test]
     fn parse_flags_vaapi_no_gl() {
-        let a = parse_from(args(&["waywall", "--vaapi", "--no-gl", "v.mp4"])).unwrap();
-        assert!(a.use_vaapi);
-        assert!(!a.use_egl_gl);
+        let a = parse_from(args(&["waywall", "--hwdec", "vaapi", "v.mp4"])).unwrap();
+        assert!(a.use_hwdec);
+
+        let b = parse_from(args(&["waywall", "--hwdec", "no", "v.mp4"])).unwrap();
+        assert!(!b.use_hwdec);
+    }
+
+    #[test]
+    fn parse_hwdec_invalid_errors() {
+        let e = parse_from(args(&["waywall", "--hwdec", "bad", "v.mp4"])).unwrap_err();
+        assert!(e.contains("invalid --hwdec"));
+    }
+
+    #[test]
+    fn parse_hwdec_missing_value_errors() {
+        let e = parse_from(args(&["waywall", "--hwdec"])).unwrap_err();
+        assert!(e.contains("requires a value"));
+        let e2 = parse_from(args(&["waywall", "--hwdec", "vaapi"])).unwrap_err();
+        assert!(e2.contains("missing video"));
     }
 
     #[test]

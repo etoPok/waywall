@@ -33,10 +33,10 @@ pub struct BootstrapOutput {
 }
 
 pub fn bootstrap(args: &mut Args) -> Result<BootstrapOutput> {
-    if args.use_egl_gl {
-        bootstrap_gl_egl(args)
-    } else {
+    if args.use_hwdec {
         bootstrap_drm(args)
+    } else {
+        bootstrap_gl_egl(args)
     }
 }
 
@@ -76,14 +76,6 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
         warn!("wl_viewporter not available, fallback to logical size for EGL");
     }
 
-    let mut dmabuf: Option<ZwpLinuxDmabufV1> = None;
-    if args.use_vaapi {
-        dmabuf = Some(globals.bind(&qh, 4..=4, ()).context(
-            "Compositor does not support zwp_linux_dmabuf_v1 v4 (required for drm pipeline)",
-        )?);
-    }
-    let feedback = dmabuf.as_ref().map(|d| d.get_default_feedback(&qh, ()));
-
     // ------------------------------------------------------------------
     // Initial state
     // ------------------------------------------------------------------
@@ -91,7 +83,6 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
     let mut app = App::new(conn.clone(), compositor, layer_shell);
     app.qh = Some(qh.clone());
     app.viewporter = viewporter;
-    app.dmabuf = dmabuf;
 
     let registry = globals.registry();
     for global in globals.contents().clone_list() {
@@ -114,32 +105,12 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
         &mut queue,
         &mut app,
         Duration::from_secs(2),
-        |state| state.configured && (!args.use_vaapi || state.dmabuf_main_device.is_some()),
+        |state| state.configured,
     )?;
 
     if !app.configured {
-        if let Some(fb) = feedback {
-            fb.destroy();
-        }
         bail!("Compositor did not send zwl_layer_surface_v1.configure within waiting time.");
     }
-
-    let render_node = if args.use_vaapi {
-        if app.dmabuf_main_device.is_none() {
-            bail!(
-            "Compositor did not send zwp_linux_dmabuf_feedback_v1.main_device within waiting time."
-          );
-        }
-
-        feedback.unwrap().destroy();
-
-        Some(
-            render_node_from_main_device(app.dmabuf_main_device.as_ref().unwrap())
-                .context("render_node_from_main_device failed")?,
-        )
-    } else {
-        None
-    };
 
     initialize_gl_egl(&mut app, wl_display_ptr)?;
 
@@ -157,8 +128,8 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
         app.frame_queue.clone(),
         notifier,
         error_ping,
-        args.use_vaapi,
-        render_node.as_deref(),
+        args.use_hwdec,
+        None,
     )
     .context("Failed to start decoder")?;
     app.decoder = Some(decoder);
@@ -271,7 +242,7 @@ pub fn bootstrap_drm(args: &mut Args) -> Result<BootstrapOutput> {
         app.frame_queue.clone(),
         notifier,
         error_ping,
-        args.use_vaapi,
+        args.use_hwdec,
         Some(&render_node),
     )
     .context("Failed to start decoder")?;

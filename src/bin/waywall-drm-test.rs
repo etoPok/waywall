@@ -20,10 +20,10 @@ fn main() -> anyhow::Result<()> {
     let test_args = test_args::parse();
     let frames = test_args.frames;
     let mut prod_args = test_args.prod;
-    let bootstrap_output = if prod_args.use_egl_gl {
-        waywall::app::bootstrap::bootstrap_gl_egl(&mut prod_args)?
-    } else {
+    let bootstrap_output = if prod_args.use_hwdec {
         waywall::app::bootstrap::bootstrap_drm(&mut prod_args)?
+    } else {
+        waywall::app::bootstrap::bootstrap_gl_egl(&mut prod_args)?
     };
 
     let (mut event_loop, mut app, loop_signal) = waywall::runtime::event_loop::build_common_loop(
@@ -34,18 +34,18 @@ fn main() -> anyhow::Result<()> {
     )
     .context("build_common_loop")?;
 
-    if prod_args.use_egl_gl {
+    if prod_args.use_hwdec {
         event_loop
             .handle()
             .insert_source(bootstrap_output.ping_source, move |(), _, app| {
-                process_egl_gl(app, frames);
+                process_drm(app, frames);
             })
             .map_err(|e| anyhow::anyhow!("Error registering decoder ping: {}", e))?;
     } else {
         event_loop
             .handle()
             .insert_source(bootstrap_output.ping_source, move |(), _, app| {
-                process_drm(app, frames);
+                process_egl_gl(app, frames);
             })
             .map_err(|e| anyhow::anyhow!("Error registering decoder ping: {}", e))?;
     }
@@ -125,7 +125,7 @@ fn process_egl_gl(app: &mut App, max_frames: u64) {
 
     unsafe {
         info!(
-            "process_drm_frame: read slot pts={} pkt_dts={} best_effort={} w={} h={} fmt={} ({}) queue_len={}",
+            "process_egl_gl: read slot pts={} pkt_dts={} best_effort={} w={} h={} fmt={} ({}) queue_len={}",
             (*frame_ptr).pts,
             (*frame_ptr).pkt_dts,
             (*frame_ptr).best_effort_timestamp,
@@ -163,6 +163,7 @@ fn process_egl_gl(app: &mut App, max_frames: u64) {
     if let Some(ref timing) = app.timing {
         if timing.should_drop(pts, now) {
             app.frame_queue.commit_read();
+            app.frame_count += 1;
             warn!("Frame dropped (pts={})", pts);
             return;
         }

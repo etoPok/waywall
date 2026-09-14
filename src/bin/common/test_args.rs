@@ -11,13 +11,12 @@ fn print_usage(program: &str) {
     eprintln!();
     eprintln!("Options:");
     eprintln!("  -o, --output <name>        Output connector(s) to use (e.g. eDP-1, DP-3)");
-    eprintln!("  --vaapi                    Enable hardware-accelerated decoding (VA-API)");
-    eprintln!("  --backend <drm|egl-gl>     Test backend to exercise (default: drm)");
-    eprintln!("  --frames <N>               Frames to process, must be >= 1 (default: 60)");
+    eprintln!("  --hwdec <no|vaapi>         Enable hardware-accelerated decoding (VA-API)");
     eprintln!("  -h, --help                 Show this help");
     eprintln!();
     eprintln!("Example: {program} path/to/wallpaper.mp4");
-    eprintln!("         {program} --backend egl-gl --frames 120 path/to/wallpaper.mp4");
+    eprintln!("         {program} -o eDP-1 path/to/wallpaper.mp4");
+    eprintln!("         {program} -o eDP-1 -o DP-3 path/to/wallpaper.mp4");
 }
 
 pub fn parse_from<I>(args: I) -> Result<TestArgs, String>
@@ -85,43 +84,42 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_drm_and_60_frames() {
+    fn defaults_are_hwdec_and_0_frames() {
         let a = parse_from(args(&["waywall-drm-test", "video.mp4"])).unwrap();
-        assert_eq!(a.frames, 60);
-        assert!(!a.use_egl_gl);
+        assert_eq!(a.frames, 0);
+        assert!(a.prod.use_hwdec);
         assert_eq!(a.prod.video_path, "video.mp4");
     }
 
     #[test]
-    fn backend_egl_gl_sets_flag() {
-        let a = parse_from(args(&["waywall-drm-test", "--backend", "egl-gl", "v.mp4"])).unwrap();
-        assert!(a.use_egl_gl);
+    fn hwdec_vaapi_sets_flag() {
+        let a = parse_from(args(&["waywall-drm-test", "--hwdec", "vaapi", "v.mp4"])).unwrap();
+        assert!(a.prod.use_hwdec);
     }
 
     #[test]
-    fn backend_drm_clears_flag() {
+    fn hwdec_no_clears_flag() {
         let a = parse_from(args(&[
             "waywall-drm-test",
-            "--backend",
-            "egl-gl",
-            "--backend",
-            "drm",
+            "--hwdec",
+            "vaapi",
+            "--hwdec",
+            "no",
             "v.mp4",
         ]))
         .unwrap();
-        assert!(!a.use_egl_gl);
+        assert!(!a.prod.use_hwdec);
     }
 
     #[test]
-    fn backend_invalid_errors() {
-        let e =
-            parse_from(args(&["waywall-drm-test", "--backend", "vulkan", "v.mp4"])).unwrap_err();
-        assert!(e.contains("invalid --backend"), "unexpected: {e}");
+    fn hwdec_invalid_errors() {
+        let e = parse_from(args(&["waywall-drm-test", "--hwdec", "vulkan", "v.mp4"])).unwrap_err();
+        assert!(e.contains("invalid --hwdec"), "unexpected: {e}");
     }
 
     #[test]
-    fn backend_missing_value_errors() {
-        let e = parse_from(args(&["waywall-drm-test", "--backend"])).unwrap_err();
+    fn hwdec_missing_value_errors() {
+        let e = parse_from(args(&["waywall-drm-test", "--hwdec"])).unwrap_err();
         assert!(e.contains("requires a value"), "unexpected: {e}");
     }
 
@@ -155,17 +153,15 @@ mod tests {
             "waywall-drm-test",
             "-o",
             "eDP-1,DP-3",
-            "--vaapi",
-            "--backend",
-            "egl-gl",
+            "--hwdec",
+            "vaapi",
             "--frames",
             "10",
             "video.mp4",
         ]))
         .unwrap();
         assert_eq!(a.prod.outputs, vec!["eDP-1", "DP-3"]);
-        assert!(a.prod.use_vaapi);
-        assert!(a.use_egl_gl);
+        assert!(a.prod.use_hwdec);
         assert_eq!(a.frames, 10);
     }
 
