@@ -17,9 +17,11 @@ use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use crate::cli::args::Args;
 use crate::decoder::Decoder;
 use crate::drm_node::render_node_from_main_device;
-use crate::render::egl::init_egl;
-use crate::render::state::RenderState;
-use crate::shader::{QuadGeometry, Shader};
+use crate::render::egl::{
+    create_egl_ctx, create_egl_surface, eglDestroyContext, eglDestroySurface, eglMakeCurrent,
+    eglSwapInterval, init_egl_display, wl_egl_window_destroy,
+};
+use crate::render::state::{GlContext, RenderState};
 use crate::wayland::surfaces::create_surface;
 
 use super::state::{App, Monitor};
@@ -57,8 +59,6 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
     let conn = Connection::connect_to_env()
         .context("Could not connect to Wayland server, is WAYLAND_DISPLAY set?")?;
 
-    let wl_display_ptr = conn.backend().display_ptr() as *mut c_void;
-
     let (globals, mut queue) =
         registry_queue_init::<App>(&conn).context("Error initializing Wayland registry")?;
     let qh = queue.handle();
@@ -80,9 +80,15 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
     // Initial state
     // ------------------------------------------------------------------
 
-    let mut app = App::new(conn.clone(), compositor, layer_shell);
-    app.qh = Some(qh.clone());
-    app.viewporter = viewporter;
+    let mut app = App::new(
+        conn.clone(),
+        qh.clone(),
+        compositor,
+        layer_shell,
+        conn.backend().display_ptr() as *mut c_void,
+        viewporter,
+        None,
+    );
 
     let registry = globals.registry();
     for global in globals.contents().clone_list() {
@@ -112,7 +118,7 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
         bail!("Compositor did not send zwl_layer_surface_v1.configure within waiting time.");
     }
 
-    initialize_gl_egl(&mut app, wl_display_ptr)?;
+    initialize_gl_egl(&mut app)?;
 
     // ------------------------------------------------------------------
     // Start decoder
@@ -182,10 +188,15 @@ pub fn bootstrap_drm(args: &mut Args) -> Result<BootstrapOutput> {
     // Initial state
     // ------------------------------------------------------------------
 
-    let mut app = App::new(conn.clone(), compositor, layer_shell);
-    app.qh = Some(qh.clone());
-    app.viewporter = viewporter;
-    app.dmabuf = Some(dmabuf);
+    let mut app = App::new(
+        conn.clone(),
+        qh.clone(),
+        compositor,
+        layer_shell,
+        std::ptr::null_mut::<c_void>(),
+        viewporter,
+        Some(dmabuf),
+    );
 
     let registry = globals.registry();
     for global in globals.contents().clone_list() {
@@ -257,10 +268,14 @@ pub fn bootstrap_drm(args: &mut Args) -> Result<BootstrapOutput> {
     })
 }
 
-fn initialize_gl_egl(app: &mut App, wl_display_ptr: *mut c_void) -> Result<(), anyhow::Error> {
+fn initialize_gl_egl(app: &mut App) -> Result<(), anyhow::Error> {
+    let (egl_display, egl_config) = unsafe { init_egl_display(app.wl_display)? };
+    let mut egl_ctx = std::ptr::null_mut::<c_void>();
+    let mut egl_make_current = true;
+
     for monitor in app.monitors.iter() {
         if monitor.wl_surface_ptr.is_null() {
-            anyhow::bail!("Could not obtain the native pointer of the wl_surface");
+            bail!("Could not obtain the native pointer of the wl_surface");
         }
 
         let wl_surface_ptr = monitor.wl_surface_ptr;
@@ -276,51 +291,41 @@ fn initialize_gl_egl(app: &mut App, wl_display_ptr: *mut c_void) -> Result<(), a
             monitor.logical_height.max(1080)
         } as i32;
 
-        let (egl_display, egl_surface, egl_context, egl_window) = unsafe {
-            init_egl(wl_display_ptr, wl_surface_ptr, width, height)
-                .context("Error initializing EGL")?
-        };
+        let (egl_surface, egl_window) =
+            unsafe { create_egl_surface(egl_display, wl_surface_ptr, egl_config, width, height)? };
+
+        // check eglMakeCurrent with the first available RenderState to avoid resource creation and
+        // destruction
+        if egl_make_current {
+            unsafe {
+                egl_ctx = create_egl_ctx(egl_display, egl_config)?;
+                if eglMakeCurrent(egl_display, egl_surface, egl_surface, egl_ctx) == 0 {
+                    wl_egl_window_destroy(egl_window);
+                    eglDestroySurface(egl_display, egl_surface);
+                    eglDestroyContext(egl_display, egl_ctx);
+                    bail!("eglMakeCurrent failed");
+                }
+                eglSwapInterval(egl_display, 0);
+            }
+            egl_make_current = false;
+        }
 
         app.render_states.push(RenderState {
             egl_display,
             egl_surface,
-            egl_context,
             egl_window,
             width,
             height,
-            textures: Vec::new(),
         });
-    }
-
-    {
-        let last_rs = app.render_states.last().unwrap();
-        unsafe {
-            crate::render::egl::eglMakeCurrent(
-                last_rs.egl_display,
-                last_rs.egl_surface,
-                last_rs.egl_surface,
-                last_rs.egl_context,
-            );
-        }
     }
 
     gl::load_with(|name| {
         let c_str = CString::new(name).unwrap();
         unsafe { crate::render::egl::eglGetProcAddress(c_str.as_ptr()) as *const _ }
     });
-
     info!("OpenGL functions loaded successfully");
 
-    let shader_yuv = Shader::new_yuv420p();
-    let shader_nv12 = Shader::new_nv12();
-    info!("Shaders compiled (YUV420P + NV12)");
-
-    let quad = QuadGeometry::new();
-    info!("Quad geometry initialized");
-
-    app.shader_yuv = Some(shader_yuv);
-    app.shader_nv12 = Some(shader_nv12);
-    app.quad = Some(quad);
+    app.gl_ctx = Some(GlContext::new(egl_display, egl_ctx));
 
     Ok(())
 }

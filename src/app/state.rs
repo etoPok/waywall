@@ -24,8 +24,8 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
 use crate::decoder::Decoder;
 use crate::drm_frame::DrmFrame;
 use crate::frame_queue::FrameQueue;
-use crate::render::state::RenderState;
-use crate::shader::{QuadGeometry, Shader};
+use crate::render::egl::eglTerminate;
+use crate::render::state::{GlContext, RenderState};
 use crate::timing::Timing;
 use crate::vaapi_converter::VaapiConverter;
 
@@ -106,9 +106,11 @@ impl Drop for WlBufferState {
 
 pub struct App {
     pub conn: Connection,
+    pub qh: QueueHandle<App>,
     pub compositor: WlCompositor,
     pub layer_shell: ZwlrLayerShellV1,
     pub viewporter: Option<WpViewporter>,
+    pub wl_display: *mut c_void,
 
     // DMA-BUF
     pub dmabuf: Option<ZwpLinuxDmabufV1>,
@@ -120,18 +122,14 @@ pub struct App {
     pub loop_signal: Option<LoopSignal>,
     pub configured: bool,
 
-    pub qh: Option<QueueHandle<App>>,
-
     pub render_states: Vec<RenderState>,
 
     // Decoder + Frame Queue
     pub decoder: Option<Decoder>,
     pub frame_queue: Arc<FrameQueue>,
 
-    // Shaders + Geometry
-    pub shader_yuv: Option<Shader>,
-    pub shader_nv12: Option<Shader>,
-    pub quad: Option<QuadGeometry>,
+    // shaders + geometry + egl_ctx
+    pub gl_ctx: Option<GlContext>,
 
     // Timing
     pub timing: Option<Timing>,
@@ -143,26 +141,33 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(conn: Connection, compositor: WlCompositor, layer_shell: ZwlrLayerShellV1) -> Self {
+    pub fn new(
+        conn: Connection,
+        qh: QueueHandle<App>,
+        compositor: WlCompositor,
+        layer_shell: ZwlrLayerShellV1,
+        wl_display: *mut c_void,
+        viewporter: Option<WpViewporter>,
+        dmabuf: Option<ZwpLinuxDmabufV1>,
+    ) -> Self {
         Self {
             conn,
+            qh,
             compositor,
             layer_shell,
-            viewporter: None,
-            dmabuf: None,
+            viewporter,
+            wl_display,
+            dmabuf,
             dmabuf_main_device: None,
             wl_buffer_states: std::array::from_fn(|_| None),
             converter: None,
             monitors: Vec::new(),
             loop_signal: None,
             configured: false,
-            qh: None,
             render_states: Vec::new(),
             decoder: None,
             frame_queue: Arc::new(FrameQueue::new()),
-            shader_yuv: None,
-            shader_nv12: None,
-            quad: None,
+            gl_ctx: None,
             timing: None,
             last_pts: None,
             frame_count: 0,
@@ -220,11 +225,7 @@ impl App {
             let wbs = self.wl_buffer_states[idx].as_mut().unwrap();
             wbs.drm_frame_wrapper = new_wrapper;
 
-            let params = self
-                .dmabuf
-                .as_ref()
-                .unwrap()
-                .create_params(self.qh.as_ref().unwrap(), ());
+            let params = self.dmabuf.as_ref().unwrap().create_params(&self.qh, ());
 
             let mut plane_idx = 0u32;
             for layer in wbs.drm_frame_wrapper.layers.iter() {
@@ -248,7 +249,7 @@ impl App {
                 wbs.drm_frame_wrapper.height,
                 wbs.drm_frame_wrapper.format,
                 Flags::empty(),
-                self.qh.as_ref().unwrap(),
+                &self.qh,
                 (),
             );
 
@@ -280,11 +281,7 @@ impl App {
                 }
             };
 
-            let params = self
-                .dmabuf
-                .as_ref()
-                .unwrap()
-                .create_params(self.qh.as_ref().unwrap(), ());
+            let params = self.dmabuf.as_ref().unwrap().create_params(&self.qh, ());
             let mut plane_idx = 0u32;
 
             for layer in drm_wrapper.layers.iter() {
@@ -308,7 +305,7 @@ impl App {
                 drm_wrapper.height,
                 drm_wrapper.format,
                 Flags::empty(),
-                self.qh.as_ref().unwrap(),
+                &self.qh,
                 (),
             );
 
@@ -332,6 +329,18 @@ impl Drop for App {
     fn drop(&mut self) {
         if let Some(ref decoder) = self.decoder {
             decoder.stop();
+        }
+
+        self.render_states.clear();
+
+        if let Some(gl) = self.gl_ctx.take() {
+            drop(gl);
+        }
+
+        if !self.wl_display.is_null() {
+            unsafe {
+                eglTerminate(self.wl_display);
+            }
         }
     }
 }

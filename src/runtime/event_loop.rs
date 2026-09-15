@@ -173,37 +173,34 @@ fn process_egl_gl(app: &mut App) {
 
     let fmt = unsafe { (*frame_ptr).format as u32 };
 
+    let gl_ctx = app.gl_ctx.as_mut().unwrap();
     let shader: &Shader;
     if fmt == AVPixelFormat::AV_PIX_FMT_YUV420P as i32 as u32 {
-        shader = app.shader_yuv.as_ref().unwrap();
+        shader = &gl_ctx.shader_yuv;
     } else if fmt == AVPixelFormat::AV_PIX_FMT_NV12 as i32 as u32 {
-        shader = app.shader_nv12.as_ref().unwrap();
+        shader = &gl_ctx.shader_nv12;
     } else {
         warn!("Unsupported pixel format, skipping frame");
         app.frame_queue.commit_read();
         return;
     }
-
-    let quad = app.quad.as_ref().unwrap();
-
     unsafe {
+        // TODO: make the GL context explicitly current before creating/uploading
+        // textures, instead of relying on the context left current by bootstrap
+        if gl_ctx.textures.is_empty() {
+            gl_ctx.textures = crate::render::frame::init_textures(frame_ptr);
+            info!("Textures created ({} textures)", gl_ctx.textures.len());
+        }
+
+        crate::render::frame::upload_frame(&gl_ctx.textures, frame_ptr);
+
         for rs in app.render_states.iter_mut() {
             crate::render::egl::eglMakeCurrent(
                 rs.egl_display,
                 rs.egl_surface,
                 rs.egl_surface,
-                rs.egl_context,
+                gl_ctx.egl_ctx,
             );
-
-            if rs.textures.is_empty() {
-                rs.textures = crate::render::frame::init_textures(frame_ptr);
-                info!(
-                    "Textures created for monitor ({} textures)",
-                    rs.textures.len()
-                );
-            }
-
-            crate::render::frame::upload_frame(&rs.textures, frame_ptr);
 
             gl::Viewport(0, 0, rs.width, rs.height);
             gl::ClearColor(0.0, 0.0, 0.0, 1.0);
@@ -211,13 +208,13 @@ fn process_egl_gl(app: &mut App) {
 
             shader.use_program();
 
-            let num_textures = rs.textures.len();
+            let num_textures = gl_ctx.textures.len();
             for i in 0..num_textures {
                 gl::ActiveTexture(gl::TEXTURE0 + i as u32);
-                gl::BindTexture(gl::TEXTURE_2D, rs.textures[i]);
+                gl::BindTexture(gl::TEXTURE_2D, gl_ctx.textures[i]);
             }
 
-            quad.draw();
+            gl_ctx.quad.draw();
 
             crate::render::egl::eglSwapBuffers(rs.egl_display, rs.egl_surface);
         }
