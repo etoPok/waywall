@@ -6,7 +6,7 @@ use calloop::timer::Timer;
 use calloop::{EventLoop, LoopSignal};
 use calloop_wayland_source::WaylandSource;
 use ffmpeg_sys_next::AVPixelFormat;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use wayland_client::{Connection, EventQueue};
 
 use crate::app::state::App;
@@ -85,7 +85,7 @@ where
         .map_err(|e| anyhow::anyhow!("Error registering stats timer: {}", e))?;
 
     app.last_stats_time = Some(Instant::now());
-    info!("Event loop started. Ctrl+C to exit.");
+    debug!("Event loop started. Ctrl+C to exit.");
     unsafe { crate::runtime::signals::ctrlc_setup(loop_signal) };
     event_loop
         .run(None, &mut app, |_app| {})
@@ -95,7 +95,7 @@ where
     Ok(())
 }
 
-pub fn run(
+pub fn run_egl_gl(
     app: App,
     conn: Connection,
     queue: EventQueue<App>,
@@ -143,7 +143,7 @@ fn process_egl_gl(app: &mut App) {
     if app.timing.is_none() {
         if let Some(ref decoder) = app.decoder {
             app.timing = Some(Timing::new(decoder.time_base));
-            info!("Timing initialized: time_base={}", decoder.time_base);
+            debug!("Timing initialized: time_base={}", decoder.time_base);
         }
     }
 
@@ -151,7 +151,7 @@ fn process_egl_gl(app: &mut App) {
         if pts < last_pts - 100 {
             if let Some(ref decoder) = app.decoder {
                 app.timing = Some(Timing::new(decoder.time_base));
-                info!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
+                debug!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
             }
         }
     }
@@ -189,7 +189,7 @@ fn process_egl_gl(app: &mut App) {
         // textures, instead of relying on the context left current by bootstrap
         if gl_ctx.textures.is_empty() {
             gl_ctx.textures = crate::render::frame::init_textures(frame_ptr);
-            info!("Textures created ({} textures)", gl_ctx.textures.len());
+            debug!("Textures created ({} textures)", gl_ctx.textures.len());
         }
 
         crate::render::frame::upload_frame(&gl_ctx.textures, frame_ptr);
@@ -243,7 +243,7 @@ pub fn process_drm(app: &mut App) {
     if app.timing.is_none() {
         if let Some(ref decoder) = app.decoder {
             app.timing = Some(Timing::new(decoder.time_base));
-            info!("Timing initialized: time_base={}", decoder.time_base);
+            debug!("Timing initialized: time_base={}", decoder.time_base);
         }
     }
 
@@ -251,7 +251,7 @@ pub fn process_drm(app: &mut App) {
         if !is_nop && last_pts != AV_NOPTS_VALUE && pts < last_pts - 100 {
             if let Some(ref decoder) = app.decoder {
                 app.timing = Some(Timing::new(decoder.time_base));
-                info!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
+                debug!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
             }
         }
     }
@@ -319,8 +319,8 @@ pub fn process_drm(app: &mut App) {
     let wbs = match app.acquire_or_create_buffer(unsafe { &mut *frame_ptr }) {
         Ok(Some(wbs)) => wbs,
         Ok(None) => {
-            warn!("No free WlBuffer slot and no reusable buffer, dropping frame");
             app.frame_queue.commit_read();
+            warn!("WlBuffer not free. Dropped frame");
             return;
         }
         Err(e) => {

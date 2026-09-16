@@ -2,7 +2,7 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
 
 use anyhow::{bail, Ok, Result};
-use tracing::info;
+use tracing::debug;
 
 #[link(name = "EGL")]
 extern "C" {
@@ -85,7 +85,7 @@ pub unsafe fn init_egl_display(wl_display: *mut c_void) -> Result<(*mut c_void, 
     if eglInitialize(egl_display, &mut major, &mut minor) == 0 {
         bail!("eglInitialize failed")
     }
-    info!("EGL {}.{} initialized", major, minor);
+    debug!("EGL {}.{} initialized", major, minor);
 
     if eglBindAPI(EGL_OPENGL_API) == 0 {
         bail!("eglBindAPI failed");

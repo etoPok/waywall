@@ -3,7 +3,7 @@ use std::ptr;
 
 use anyhow::Result;
 use ffmpeg_sys_next::*;
-use tracing::info;
+use tracing::debug;
 
 pub struct VaapiConverter {
     graph: *mut AVFilterGraph,
@@ -178,7 +178,7 @@ impl VaapiConverter {
                 }
             }
 
-            info!(
+            debug!(
                 "VaapiConverter::convert incoming w={} h={} fmt={} pts={} pkt_dts={} best_effort={}",
                 (*vaapi_frame).width,
                 (*vaapi_frame).height,

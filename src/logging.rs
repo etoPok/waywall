@@ -1,6 +1,6 @@
 use tracing_subscriber::EnvFilter;
 
-const DEFAULT_PROD_FILTER: &str = "waywall=error";
+const DEFAULT_PROD_FILTER: &str = "waywall=info";
 const DEFAULT_TEST_FILTER: &str = "waywall=debug";
 
 fn init_with_default(default: &str) {

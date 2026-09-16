@@ -8,7 +8,7 @@ use std::thread::{self, JoinHandle};
 use anyhow::{Context, Result};
 use calloop::ping;
 use ffmpeg_sys_next::*;
-use tracing::{error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::frame_queue::FrameQueue;
 use crate::notifier::Notifier;
@@ -39,7 +39,7 @@ unsafe extern "C" fn vaapi_get_format(
             || *fmt_ptr == AVPixelFormat::AV_PIX_FMT_YUV420P10LE
             || *fmt_ptr == AVPixelFormat::AV_PIX_FMT_P010LE
         {
-            info!("get_format: using software fallback: {:?}", *fmt_ptr);
+            debug!("get_format: using software fallback: {:?}", *fmt_ptr);
             return *fmt_ptr;
         }
         fmt_ptr = fmt_ptr.add(1);
@@ -82,13 +82,13 @@ fn try_init_vaapi_hw(ctx: *mut AVCodecContext) -> bool {
             (*frames_ctx).height = (*ctx).height;
             (*frames_ctx).initial_pool_size = 16;
         } else {
-            info!("get_format: avcodec_get_hw_frames_parameters successful");
+            debug!("get_format: avcodec_get_hw_frames_parameters successful");
             let frames_ctx = (*hw_frames_ref).data as *mut AVHWFramesContext;
-            info!("  - format: {:?}", (*frames_ctx).format);
-            info!("  - sw_format: {:?}", (*frames_ctx).sw_format);
-            info!("  - width: {}", (*frames_ctx).width);
-            info!("  - height: {}", (*frames_ctx).height);
-            info!("  - initial_pool_size: {}", (*frames_ctx).initial_pool_size);
+            debug!("  - format: {:?}", (*frames_ctx).format);
+            debug!("  - sw_format: {:?}", (*frames_ctx).sw_format);
+            debug!("  - width: {}", (*frames_ctx).width);
+            debug!("  - height: {}", (*frames_ctx).height);
+            debug!("  - initial_pool_size: {}", (*frames_ctx).initial_pool_size);
         }
 
         let ret = av_hwframe_ctx_init(hw_frames_ref);
@@ -231,7 +231,7 @@ impl Decoder {
         let time_base = time_base_num as f64 / time_base_den as f64;
         let pixel_format = unsafe { (*codec_ctx).pix_fmt };
 
-        info!(
+        debug!(
             "Decoder: {}x{}, time_base={}/{}={}, pix_fmt={:?}",
             width, height, time_base_num, time_base_den, time_base, pixel_format as i32
         );
@@ -403,7 +403,7 @@ fn decode_loop(
                     av_seek_frame(fmt_ctx, video_stream_idx, 0, AVSEEK_FLAG_BACKWARD);
                     avcodec_flush_buffers(codec_ctx);
                 }
-                info!("Decoder: EOF, restarting playback loop");
+                debug!("Decoder: EOF, restarting playback loop");
                 continue;
             } else {
                 error!("Error reading frame: {}", ret);
@@ -441,7 +441,7 @@ fn decode_loop(
         }
     }
 
-    info!("Decoder thread exiting");
+    debug!("Decoder thread exiting");
     unsafe {
         av_packet_free(&mut packet);
         avcodec_free_context(&mut codec_ctx);

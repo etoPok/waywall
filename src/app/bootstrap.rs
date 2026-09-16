@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Ok, Result};
 use calloop::ping;
 use nix::errno::Errno;
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
-use tracing::{info, warn};
+use tracing::{debug, warn};
 use wayland_backend::client::WaylandError;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::{globals::registry_queue_init, Connection, EventQueue, QueueHandle};
@@ -237,7 +237,7 @@ pub fn bootstrap_drm(args: &mut Args) -> Result<BootstrapOutput> {
     feedback.destroy();
     let render_node = render_node_from_main_device(app.dmabuf_main_device.as_ref().unwrap())
         .context("Failed to resolve compositor render node")?;
-    info!("Render node: {}", render_node.display());
+    debug!("Render node: {}", render_node.display());
 
     // ------------------------------------------------------------------
     // Start decoder
@@ -323,7 +323,7 @@ fn initialize_gl_egl(app: &mut App) -> Result<(), anyhow::Error> {
         let c_str = CString::new(name).unwrap();
         unsafe { crate::render::egl::eglGetProcAddress(c_str.as_ptr()) as *const _ }
     });
-    info!("OpenGL functions loaded successfully");
+    debug!("OpenGL functions loaded successfully");
 
     app.gl_ctx = Some(GlContext::new(egl_display, egl_ctx));
 

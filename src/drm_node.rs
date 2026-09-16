@@ -3,7 +3,7 @@ use std::os::linux::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use tracing::info;
+use tracing::debug;
 
 /// Converts the main_device byte array into a render node.
 pub fn render_node_from_main_device(device: &[u8]) -> Result<PathBuf> {
@@ -23,7 +23,7 @@ pub fn render_node_from_main_device(device: &[u8]) -> Result<PathBuf> {
 
         if let Some(path) = find_drm_node_by_major_minor(major, minor) {
             let render_node = ensure_render_node(&path)?;
-            info!("render node obtained: {:?}", render_node);
+            debug!("render node obtained: {:?}", render_node);
             return Ok(render_node);
         }
     }

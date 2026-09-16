@@ -1,4 +1,4 @@
-use tracing::{error, info, warn};
+use tracing::{debug, error, warn};
 use wayland_client::{
     delegate_noop,
     globals::GlobalListContents,
@@ -65,11 +65,11 @@ impl Dispatch<WlOutput, ()> for App {
                 wl_output::Event::Mode { width, height, .. } => {
                     monitor.physical_width = width as u32;
                     monitor.physical_height = height as u32;
-                    info!("Output {} detected: {}x{}", proxy.id(), width, height);
+                    debug!("Output {} detected: {}x{}", proxy.id(), width, height);
                 }
                 wl_output::Event::Name { name } => {
                     monitor.name = Some(name);
-                    info!(
+                    debug!(
                         "Output {} detected",
                         monitor.name.as_deref().unwrap_or("unknown")
                     );
@@ -103,10 +103,10 @@ impl Dispatch<ZwlrLayerSurfaceV1, usize> for App {
 
                         if let Some(vp) = &monitor.viewport {
                             vp.set_destination(width as i32, height as i32);
-                            info!("Viewport destination set: {}x{}", width, height);
+                            debug!("Viewport destination set: {}x{}", width, height);
                         }
 
-                        info!(
+                        debug!(
                             "Render target: ( output: {}x{}, logical: {}x{} )",
                             monitor.physical_width,
                             monitor.physical_height,
@@ -147,7 +147,7 @@ impl Dispatch<WlBuffer, ()> for App {
         if let wl_buffer::Event::Release = event {
             for wbs in state.wl_buffer_states.iter_mut().flatten() {
                 if wbs.wl_buffer.as_ref().is_some_and(|b| b.id() == proxy.id()) {
-                    info!("wl_buffer free");
+                    debug!("wl_buffer free");
                     wbs.in_use = false;
                     break;
                 }
@@ -167,7 +167,7 @@ impl Dispatch<ZwpLinuxBufferParamsV1, ()> for App {
     ) {
         match event {
             zwp_linux_buffer_params_v1::Event::Created { buffer } => {
-                info!("DMA-BUF buffer created successfully ID: {:?}", buffer.id());
+                debug!("DMA-BUF buffer created successfully ID: {:?}", buffer.id());
             }
             zwp_linux_buffer_params_v1::Event::Failed => {
                 error!("The compositor REJECTED the DMA-BUF buffer creation");

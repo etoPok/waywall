@@ -1,5 +1,5 @@
 use ffmpeg_sys_next::*;
-use tracing::{debug, info};
+use tracing::debug;
 
 pub struct DrmPlane {
     pub fd: std::os::unix::io::RawFd,
@@ -124,7 +124,7 @@ impl DrmFrame {
             let height = (*frame).height;
             let format = (*drm_frame_descriptor).layers[0].format;
 
-            info!(
+            debug!(
                 "Mapped VAAPI frame pix_fmt={} ({}) to DRM_PRIME: {}x{} drm_fourcc={:#x} ({}) layers={}",
                 (*frame).format,
                 (*frame).format as u32,

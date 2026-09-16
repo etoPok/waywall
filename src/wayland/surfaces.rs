@@ -1,4 +1,4 @@
-use tracing::info;
+use tracing::debug;
 use wayland_client::Proxy;
 use wayland_client::{protocol::wl_compositor::WlCompositor, QueueHandle};
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
@@ -48,7 +48,7 @@ pub fn create_surface(
     if let Some(vp) = &viewporter {
         let viewport = vp.get_viewport(&surface, qh, ());
         monitor.viewport = Some(viewport);
-        info!("Viewport created for surface");
+        debug!("Viewport created for surface");
     }
 
     surface.commit();
@@ -57,10 +57,10 @@ pub fn create_surface(
     monitor.layer_surface = Some(layer_surface);
 
     match &monitor.output {
-        Some(out) => info!(
+        Some(out) => debug!(
             "Layer surface created for monitor {}, waiting for compositor configure...",
             out.id()
         ),
-        None => info!("Layer surface created for monitor, waiting for compositor configure..."),
+        None => debug!("Layer surface created for monitor, waiting for compositor configure..."),
     }
 }

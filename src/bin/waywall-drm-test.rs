@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use calloop::timer::Timer;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use waywall::app::state::App;
 
@@ -57,7 +57,7 @@ fn main() -> anyhow::Result<()> {
         .handle()
         .insert_source(grace_timer, move |_, _, app| {
             if app.frame_count >= frames && !grace_clone.get() {
-                info!(
+                debug!(
                     "DRM test: {} frames committed, waiting 2s for WlBuffer Release events...",
                     frames
                 );
@@ -73,7 +73,7 @@ fn main() -> anyhow::Result<()> {
                     .filter(|wbs| !wbs.in_use)
                     .count();
                 let in_use = total.saturating_sub(free);
-                info!(
+                debug!(
                     "DRM test grace expired: total_buffers={}, in_use={}, free={}, frame_count={}",
                     total, in_use, free, app.frame_count
                 );
@@ -84,7 +84,7 @@ fn main() -> anyhow::Result<()> {
                         total
                     );
                 } else if total == frames as usize {
-                    info!("Wayland dispatch OK: {} of {} buffers released", free, total);
+                    debug!("Wayland dispatch OK: {} of {} buffers released", free, total);
                 } else {
                     warn!(
                         "Unexpected buffer pool state: expected {} buffers, got {}",
@@ -124,7 +124,7 @@ fn process_egl_gl(app: &mut App, max_frames: u64) {
     };
 
     unsafe {
-        info!(
+        debug!(
             "process_egl_gl: read slot pts={} pkt_dts={} best_effort={} w={} h={} fmt={} ({}) queue_len={}",
             (*frame_ptr).pts,
             (*frame_ptr).pkt_dts,
@@ -146,7 +146,7 @@ fn process_egl_gl(app: &mut App, max_frames: u64) {
     if app.timing.is_none() {
         if let Some(ref decoder) = app.decoder {
             app.timing = Some(Timing::new(decoder.time_base));
-            info!("Timing initialized: time_base={}", decoder.time_base);
+            debug!("Timing initialized: time_base={}", decoder.time_base);
         }
     }
 
@@ -154,7 +154,7 @@ fn process_egl_gl(app: &mut App, max_frames: u64) {
         if pts < last_pts - 100 {
             if let Some(ref decoder) = app.decoder {
                 app.timing = Some(Timing::new(decoder.time_base));
-                info!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
+                debug!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
             }
         }
     }
@@ -193,7 +193,7 @@ fn process_egl_gl(app: &mut App, max_frames: u64) {
     unsafe {
         if gl_ctx.textures.is_empty() {
             gl_ctx.textures = waywall::render::frame::init_textures(frame_ptr);
-            info!("Textures created ({} textures)", gl_ctx.textures.len());
+            debug!("Textures created ({} textures)", gl_ctx.textures.len());
         }
 
         waywall::render::frame::upload_frame(&gl_ctx.textures, frame_ptr);
@@ -240,7 +240,7 @@ fn process_drm(app: &mut App, max_frames: u64) {
     };
 
     unsafe {
-        info!(
+        debug!(
             "process_drm_frame: read slot pts={} pkt_dts={} best_effort={} w={} h={} fmt={} ({}) queue_len={}",
             (*frame_ptr).pts,
             (*frame_ptr).pkt_dts,
@@ -265,7 +265,7 @@ fn process_drm(app: &mut App, max_frames: u64) {
     if app.timing.is_none() {
         if let Some(ref decoder) = app.decoder {
             app.timing = Some(Timing::new(decoder.time_base));
-            info!("Timing initialized: time_base={}", decoder.time_base);
+            debug!("Timing initialized: time_base={}", decoder.time_base);
         }
     }
 
@@ -277,7 +277,7 @@ fn process_drm(app: &mut App, max_frames: u64) {
             if last_pts != AV_NOPTS_VALUE && pts < last_pts - 100 {
                 if let Some(ref decoder) = app.decoder {
                     app.timing = Some(Timing::new(decoder.time_base));
-                    info!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
+                    debug!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
                 }
             }
             app.last_pts = Some(pts);
@@ -343,8 +343,8 @@ fn process_drm(app: &mut App, max_frames: u64) {
     let wbs = match app.acquire_or_create_buffer(unsafe { &mut *frame_ptr }) {
         Ok(Some(wbs)) => wbs,
         Ok(None) => {
-            warn!("No free WlBuffer slot and no reusable buffer, dropping frame");
             app.frame_queue.commit_read();
+            warn!("WlBuffer not free. Dropped frame");
             return;
         }
         Err(e) => {

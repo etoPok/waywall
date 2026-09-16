@@ -15,7 +15,7 @@ fn main() -> Result<()> {
             bootstrap_output.error_ping_source,
         )
     } else {
-        waywall::runtime::event_loop::run(
+        waywall::runtime::event_loop::run_egl_gl(
             bootstrap_output.app,
             bootstrap_output.conn,
             bootstrap_output.queue,
