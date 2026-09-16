@@ -1,8 +1,8 @@
 use std::ffi::CString;
 use std::path::Path;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result};
@@ -17,36 +17,38 @@ unsafe extern "C" fn vaapi_get_format(
     ctx: *mut AVCodecContext,
     formats: *const AVPixelFormat,
 ) -> AVPixelFormat {
-    if !(*ctx).hw_device_ctx.is_null() {
+    unsafe {
+        if !(*ctx).hw_device_ctx.is_null() {
+            let mut fmt_ptr = formats;
+            while *fmt_ptr != AVPixelFormat::AV_PIX_FMT_NONE {
+                if *fmt_ptr == AVPixelFormat::AV_PIX_FMT_VAAPI {
+                    if try_init_vaapi_hw(ctx) {
+                        return AVPixelFormat::AV_PIX_FMT_VAAPI;
+                    }
+                    break;
+                }
+                fmt_ptr = fmt_ptr.add(1);
+            }
+        } else {
+            warn!("get_format: hw_device_ctx is null. Skipping hardware.");
+        }
+
         let mut fmt_ptr = formats;
         while *fmt_ptr != AVPixelFormat::AV_PIX_FMT_NONE {
-            if *fmt_ptr == AVPixelFormat::AV_PIX_FMT_VAAPI {
-                if try_init_vaapi_hw(ctx) {
-                    return AVPixelFormat::AV_PIX_FMT_VAAPI;
-                }
-                break;
+            if *fmt_ptr == AVPixelFormat::AV_PIX_FMT_NV12
+                || *fmt_ptr == AVPixelFormat::AV_PIX_FMT_YUV420P
+                || *fmt_ptr == AVPixelFormat::AV_PIX_FMT_YUV420P10LE
+                || *fmt_ptr == AVPixelFormat::AV_PIX_FMT_P010LE
+            {
+                debug!("get_format: using software fallback: {:?}", *fmt_ptr);
+                return *fmt_ptr;
             }
             fmt_ptr = fmt_ptr.add(1);
         }
-    } else {
-        warn!("get_format: hw_device_ctx is null. Skipping hardware.");
-    }
 
-    let mut fmt_ptr = formats;
-    while *fmt_ptr != AVPixelFormat::AV_PIX_FMT_NONE {
-        if *fmt_ptr == AVPixelFormat::AV_PIX_FMT_NV12
-            || *fmt_ptr == AVPixelFormat::AV_PIX_FMT_YUV420P
-            || *fmt_ptr == AVPixelFormat::AV_PIX_FMT_YUV420P10LE
-            || *fmt_ptr == AVPixelFormat::AV_PIX_FMT_P010LE
-        {
-            debug!("get_format: using software fallback: {:?}", *fmt_ptr);
-            return *fmt_ptr;
-        }
-        fmt_ptr = fmt_ptr.add(1);
+        error!("get_format: No usable format found (neither hardware nor software)");
+        AVPixelFormat::AV_PIX_FMT_NONE
     }
-
-    error!("get_format: No usable format found (neither hardware nor software)");
-    AVPixelFormat::AV_PIX_FMT_NONE
 }
 
 fn try_init_vaapi_hw(ctx: *mut AVCodecContext) -> bool {

@@ -64,6 +64,7 @@ fn main() -> anyhow::Result<()> {
                 grace_clone.set(true);
                 return calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(2));
             }
+
             if grace_clone.get() {
                 let total = app.wl_buffer_states.iter().filter(|s| s.is_some()).count();
                 let free = app
@@ -96,6 +97,7 @@ fn main() -> anyhow::Result<()> {
                 }
                 return calloop::timer::TimeoutAction::Drop;
             }
+
             calloop::timer::TimeoutAction::ToDuration(Duration::from_millis(500))
         })
         .map_err(|e| anyhow::anyhow!("Error registering DRM grace timer: {}", e))?;
@@ -143,20 +145,19 @@ fn process_egl_gl(app: &mut App, max_frames: u64) {
     let now = Instant::now();
     let pts = unsafe { (*frame_ptr).pts };
 
-    if app.timing.is_none() {
-        if let Some(ref decoder) = app.decoder {
-            app.timing = Some(Timing::new(decoder.time_base));
-            debug!("Timing initialized: time_base={}", decoder.time_base);
-        }
+    if app.timing.is_none()
+        && let Some(ref decoder) = app.decoder
+    {
+        app.timing = Some(Timing::new(decoder.time_base));
+        debug!("Timing initialized: time_base={}", decoder.time_base);
     }
 
-    if let Some(last_pts) = app.last_pts {
-        if pts < last_pts - 100 {
-            if let Some(ref decoder) = app.decoder {
-                app.timing = Some(Timing::new(decoder.time_base));
-                debug!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
-            }
-        }
+    if let Some(last_pts) = app.last_pts
+        && last_pts - 100 >= pts
+        && let Some(ref decoder) = app.decoder
+    {
+        app.timing = Some(Timing::new(decoder.time_base));
+        debug!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
     }
     app.last_pts = Some(pts);
 
@@ -180,16 +181,15 @@ fn process_egl_gl(app: &mut App, max_frames: u64) {
 
     let fmt = unsafe { (*frame_ptr).format as u32 };
     let gl_ctx = app.gl_ctx.as_mut().unwrap();
-    let shader: &Shader;
-    if fmt == AVPixelFormat::AV_PIX_FMT_YUV420P as i32 as u32 {
-        shader = &gl_ctx.shader_yuv;
+    let shader: &Shader = if fmt == AVPixelFormat::AV_PIX_FMT_YUV420P as i32 as u32 {
+        &gl_ctx.shader_yuv
     } else if fmt == AVPixelFormat::AV_PIX_FMT_NV12 as i32 as u32 {
-        shader = &gl_ctx.shader_nv12;
+        &gl_ctx.shader_nv12
     } else {
         warn!("Unsupported pixel format, skipping frame");
         app.frame_queue.commit_read();
         return;
-    }
+    };
     unsafe {
         if gl_ctx.textures.is_empty() {
             gl_ctx.textures = waywall::render::frame::init_textures(frame_ptr);
@@ -262,40 +262,36 @@ fn process_drm(app: &mut App, max_frames: u64) {
     const AV_NOPTS_VALUE: i64 = 0x8000000000000000u64 as i64;
     let pts = unsafe { (*frame_ptr).pts };
 
-    if app.timing.is_none() {
-        if let Some(ref decoder) = app.decoder {
-            app.timing = Some(Timing::new(decoder.time_base));
-            debug!("Timing initialized: time_base={}", decoder.time_base);
-        }
+    if app.timing.is_none()
+        && let Some(ref decoder) = app.decoder
+    {
+        app.timing = Some(Timing::new(decoder.time_base));
+        debug!("Timing initialized: time_base={}", decoder.time_base);
     }
 
     let is_nop = pts == AV_NOPTS_VALUE;
     if is_nop {
         warn!("Frame with AV_NOPTS_VALUE (no pts), skipping timing");
-    } else {
-        if let Some(last_pts) = app.last_pts {
-            if last_pts != AV_NOPTS_VALUE && pts < last_pts - 100 {
-                if let Some(ref decoder) = app.decoder {
-                    app.timing = Some(Timing::new(decoder.time_base));
-                    debug!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
-                }
-            }
-            app.last_pts = Some(pts);
-        }
+    } else if let Some(last_pts) = app.last_pts
+        && last_pts != AV_NOPTS_VALUE
+        && pts < last_pts
+        && let Some(ref decoder) = app.decoder
+    {
+        app.timing = Some(Timing::new(decoder.time_base));
+        debug!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
+        app.last_pts = Some(pts);
     }
 
-    if let Some(ref timing) = app.timing {
-        if !is_nop {
-            if timing.should_drop(pts, now) {
-                app.frame_queue.commit_read();
-                warn!("Frame dropped (pts={})", pts);
-                return;
-            }
-            let render_time = timing.render_time(pts);
-            if now < render_time {
-                let sleep_dur = render_time - now;
-                std::thread::sleep(sleep_dur);
-            }
+    if !is_nop && let Some(ref timing) = app.timing {
+        if timing.should_drop(pts, now) {
+            app.frame_queue.commit_read();
+            warn!("Frame dropped (pts={})", pts);
+            return;
+        }
+        let render_time = timing.render_time(pts);
+        if now < render_time {
+            let sleep_dur = render_time - now;
+            std::thread::sleep(sleep_dur);
         }
     }
 

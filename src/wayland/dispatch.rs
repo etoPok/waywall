@@ -1,6 +1,6 @@
 use tracing::{debug, error, warn};
 use wayland_client::{
-    delegate_noop,
+    Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
     globals::GlobalListContents,
     protocol::{
         wl_buffer::{self, WlBuffer},
@@ -10,7 +10,6 @@ use wayland_client::{
         wl_seat::WlSeat,
         wl_surface::WlSurface,
     },
-    Connection, Dispatch, Proxy, QueueHandle,
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1::ZwlrLayerShellV1,
@@ -95,31 +94,31 @@ impl Dispatch<ZwlrLayerSurfaceV1, usize> for App {
                 width,
                 height,
             } => {
-                if let Some(monitor) = state.monitors.get_mut(*data) {
-                    if !state.configured {
-                        monitor.logical_width = width;
-                        monitor.logical_height = height;
-                        monitor.configured = true;
+                if let Some(monitor) = state.monitors.get_mut(*data)
+                    && !state.configured
+                {
+                    monitor.logical_width = width;
+                    monitor.logical_height = height;
+                    monitor.configured = true;
 
-                        if let Some(vp) = &monitor.viewport {
-                            vp.set_destination(width as i32, height as i32);
-                            debug!("Viewport destination set: {}x{}", width, height);
-                        }
-
-                        debug!(
-                            "Render target: ( output: {}x{}, logical: {}x{} )",
-                            monitor.physical_width,
-                            monitor.physical_height,
-                            monitor.logical_width,
-                            monitor.logical_height
-                        );
-
-                        if let Some(surface) = &monitor.surface {
-                            surface.commit();
-                        }
-
-                        state.configured = state.monitors.iter().all(|m| m.configured);
+                    if let Some(vp) = &monitor.viewport {
+                        vp.set_destination(width as i32, height as i32);
+                        debug!("Viewport destination set: {}x{}", width, height);
                     }
+
+                    debug!(
+                        "Render target: ( output: {}x{}, logical: {}x{} )",
+                        monitor.physical_width,
+                        monitor.physical_height,
+                        monitor.logical_width,
+                        monitor.logical_height
+                    );
+
+                    if let Some(surface) = &monitor.surface {
+                        surface.commit();
+                    }
+
+                    state.configured = state.monitors.iter().all(|m| m.configured);
                 }
 
                 proxy.ack_configure(serial);

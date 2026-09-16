@@ -1,11 +1,11 @@
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
 
-use anyhow::{bail, Ok, Result};
+use anyhow::{Ok, Result, bail};
 use tracing::debug;
 
 #[link(name = "EGL")]
-extern "C" {
+unsafe extern "C" {
     pub fn eglGetDisplay(native_display: *mut c_void) -> *mut c_void;
     pub fn eglInitialize(display: *mut c_void, major: *mut c_int, minor: *mut c_int) -> u32;
     pub fn eglBindAPI(api: u32) -> u32;
@@ -43,7 +43,7 @@ extern "C" {
 }
 
 #[link(name = "wayland-egl")]
-extern "C" {
+unsafe extern "C" {
     pub fn wl_egl_window_create(surface: *mut c_void, width: c_int, height: c_int) -> *mut c_void;
     pub fn wl_egl_window_destroy(egl_window: *mut c_void);
     pub fn wl_egl_window_resize(
@@ -75,48 +75,50 @@ pub const EGL_NO_SURFACE: *mut c_void = ptr::null_mut();
 
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn init_egl_display(wl_display: *mut c_void) -> Result<(*mut c_void, *mut c_void)> {
-    let egl_display = eglGetDisplay(wl_display);
-    if egl_display == EGL_NO_DISPLAY {
-        bail!("eglGetDisplay failed");
-    }
+    unsafe {
+        let egl_display = eglGetDisplay(wl_display);
+        if egl_display == EGL_NO_DISPLAY {
+            bail!("eglGetDisplay failed");
+        }
 
-    let mut major: c_int = 0;
-    let mut minor: c_int = 0;
-    if eglInitialize(egl_display, &mut major, &mut minor) == 0 {
-        bail!("eglInitialize failed")
-    }
-    debug!("EGL {}.{} initialized", major, minor);
+        let mut major: c_int = 0;
+        let mut minor: c_int = 0;
+        if eglInitialize(egl_display, &mut major, &mut minor) == 0 {
+            bail!("eglInitialize failed")
+        }
+        debug!("EGL {}.{} initialized", major, minor);
 
-    if eglBindAPI(EGL_OPENGL_API) == 0 {
-        bail!("eglBindAPI failed");
-    }
+        if eglBindAPI(EGL_OPENGL_API) == 0 {
+            bail!("eglBindAPI failed");
+        }
 
-    #[rustfmt::skip]
-    let attribs_config: [c_int; 15] = [
-      EGL_SURFACE_TYPE,     EGL_WINDOW_BIT,
-      EGL_RENDERABLE_TYPE,  EGL_OPENGL_BIT,
-      EGL_RED_SIZE,         8,
-      EGL_GREEN_SIZE,       8,
-      EGL_BLUE_SIZE,        8,
-      EGL_ALPHA_SIZE,       8,
-      EGL_DEPTH_SIZE,       0,
-      EGL_NONE,
-    ];
-    let mut egl_config: *mut c_void = ptr::null_mut();
-    let mut num_configs: c_int = 0;
-    if eglChooseConfig(
-        egl_display,
-        attribs_config.as_ptr(),
-        &mut egl_config,
-        1,
-        &mut num_configs,
-    ) == 0
-        || num_configs == 0
-    {
-        bail!("eglChooseConfig failed or no valid configs found");
-    }
+        #[rustfmt::skip]
+        let attribs_config: [c_int; 15] = [
+            EGL_SURFACE_TYPE,     EGL_WINDOW_BIT,
+            EGL_RENDERABLE_TYPE,  EGL_OPENGL_BIT,
+            EGL_RED_SIZE,         8,
+            EGL_GREEN_SIZE,       8,
+            EGL_BLUE_SIZE,        8,
+            EGL_ALPHA_SIZE,       8,
+            EGL_DEPTH_SIZE,       0,
+            EGL_NONE,
+        ];
+        let mut egl_config: *mut c_void = ptr::null_mut();
+        let mut num_configs: c_int = 0;
+        if eglChooseConfig(
+            egl_display,
+            attribs_config.as_ptr(),
+            &mut egl_config,
+            1,
+            &mut num_configs,
+        ) == 0
+            || num_configs == 0
+        {
+            bail!("eglChooseConfig failed or no valid configs found");
+        }
 
-    Ok((egl_display, egl_config))
+        Ok((egl_display, egl_config))
+    }
 }
 
 #[allow(clippy::missing_safety_doc)]
@@ -127,18 +129,20 @@ pub unsafe fn create_egl_surface(
     width: i32,
     height: i32,
 ) -> Result<(*mut c_void, *mut c_void)> {
-    let egl_window = wl_egl_window_create(wl_surface, width, height);
-    if egl_window.is_null() {
-        bail!("wl_egl_window_create failed");
-    }
+    unsafe {
+        let egl_window = wl_egl_window_create(wl_surface, width, height);
+        if egl_window.is_null() {
+            bail!("wl_egl_window_create failed");
+        }
 
-    let egl_surface = eglCreateWindowSurface(egl_display, egl_config, egl_window, ptr::null());
-    if egl_surface == EGL_NO_SURFACE {
-        wl_egl_window_destroy(egl_window);
-        bail!("eglCreateWindowSurface failed");
-    }
+        let egl_surface = eglCreateWindowSurface(egl_display, egl_config, egl_window, ptr::null());
+        if egl_surface == EGL_NO_SURFACE {
+            wl_egl_window_destroy(egl_window);
+            bail!("eglCreateWindowSurface failed");
+        }
 
-    Ok((egl_surface, egl_window))
+        Ok((egl_surface, egl_window))
+    }
 }
 
 #[allow(clippy::missing_safety_doc)]
@@ -146,20 +150,22 @@ pub unsafe fn create_egl_ctx(
     egl_display: *mut c_void,
     egl_config: *mut c_void,
 ) -> Result<*mut c_void> {
-    #[rustfmt::skip]
+    unsafe {
+        #[rustfmt::skip]
     let attribs_ctx: [c_int; 5] = [
-        EGL_CONTEXT_MAJOR_VERSION, 3,
-        EGL_CONTEXT_MINOR_VERSION, 3,
-        EGL_NONE,
+      EGL_CONTEXT_MAJOR_VERSION, 3,
+      EGL_CONTEXT_MINOR_VERSION, 3,
+      EGL_NONE,
     ];
-    let egl_context = eglCreateContext(
-        egl_display,
-        egl_config,
-        EGL_NO_CONTEXT,
-        attribs_ctx.as_ptr(),
-    );
-    if egl_context == EGL_NO_CONTEXT {
-        bail!("eglCreateContext failed");
+        let egl_context = eglCreateContext(
+            egl_display,
+            egl_config,
+            EGL_NO_CONTEXT,
+            attribs_ctx.as_ptr(),
+        );
+        if egl_context == EGL_NO_CONTEXT {
+            bail!("eglCreateContext failed");
+        }
+        Ok(egl_context)
     }
-    Ok(egl_context)
 }

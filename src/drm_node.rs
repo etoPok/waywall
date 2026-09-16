@@ -2,7 +2,7 @@ use std::fs;
 use std::os::linux::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use tracing::debug;
 
 /// Converts the main_device byte array into a render node.
@@ -55,10 +55,10 @@ fn find_drm_node_by_dev_t(dev: u64) -> Option<PathBuf> {
     for entry in entries.flatten() {
         let path = entry.path();
 
-        if let Ok(meta) = fs::metadata(&path) {
-            if meta.st_rdev() == dev {
-                return Some(path);
-            }
+        if let Ok(meta) = fs::metadata(&path)
+            && meta.st_rdev() == dev
+        {
+            return Some(path);
         }
     }
 
@@ -82,13 +82,13 @@ fn find_drm_node_by_major_minor(major: u64, minor: u64) -> Option<PathBuf> {
 
         let dev_file = entry.path().join("dev");
 
-        if let Ok(content) = fs::read_to_string(dev_file) {
-            if content.trim() == expected {
-                let path = Path::new("/dev/dri").join(name.as_ref());
+        if let Ok(content) = fs::read_to_string(dev_file)
+            && content.trim() == expected
+        {
+            let path = Path::new("/dev/dri").join(name.as_ref());
 
-                if path.exists() {
-                    return Some(path);
-                }
+            if path.exists() {
+                return Some(path);
             }
         }
     }
@@ -130,14 +130,14 @@ fn render_node_from_drm_node(node: &Path) -> Result<PathBuf> {
     }
 
     // Simple fallback: card0 -> renderD128, card1 -> renderD129, etc.
-    if let Some(card_number) = name.strip_prefix("card") {
-        if let Ok(n) = card_number.parse::<u32>() {
-            let render_name = format!("renderD{}", 128 + n);
-            let render_path = Path::new("/dev/dri").join(render_name);
+    if let Some(card_number) = name.strip_prefix("card")
+        && let Ok(n) = card_number.parse::<u32>()
+    {
+        let render_name = format!("renderD{}", 128 + n);
+        let render_path = Path::new("/dev/dri").join(render_name);
 
-            if render_path.exists() {
-                return Ok(render_path);
-            }
+        if render_path.exists() {
+            return Ok(render_path);
         }
     }
 
@@ -164,10 +164,10 @@ fn render_node_from_sys_device(sys_device: &Path) -> Result<PathBuf> {
             .join(name.as_ref())
             .join("device");
 
-        if let Ok(candidate_device) = fs::canonicalize(device_path) {
-            if candidate_device == sys_device {
-                return Ok(Path::new("/dev/dri").join(name.as_ref()));
-            }
+        if let Ok(candidate_device) = fs::canonicalize(device_path)
+            && candidate_device == sys_device
+        {
+            return Ok(Path::new("/dev/dri").join(name.as_ref()));
         }
     }
 

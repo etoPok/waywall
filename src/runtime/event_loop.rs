@@ -140,20 +140,19 @@ fn process_egl_gl(app: &mut App) {
 
     let pts = unsafe { (*frame_ptr).pts };
 
-    if app.timing.is_none() {
-        if let Some(ref decoder) = app.decoder {
-            app.timing = Some(Timing::new(decoder.time_base));
-            debug!("Timing initialized: time_base={}", decoder.time_base);
-        }
+    if app.timing.is_none()
+        && let Some(ref decoder) = app.decoder
+    {
+        app.timing = Some(Timing::new(decoder.time_base));
+        debug!("Timing initialized: time_base={}", decoder.time_base);
     }
 
-    if let Some(last_pts) = app.last_pts {
-        if pts < last_pts - 100 {
-            if let Some(ref decoder) = app.decoder {
-                app.timing = Some(Timing::new(decoder.time_base));
-                debug!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
-            }
-        }
+    if let Some(last_pts) = app.last_pts
+        && pts < last_pts - 100
+        && let Some(ref decoder) = app.decoder
+    {
+        app.timing = Some(Timing::new(decoder.time_base));
+        debug!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
     }
     app.last_pts = Some(pts);
 
@@ -174,16 +173,15 @@ fn process_egl_gl(app: &mut App) {
     let fmt = unsafe { (*frame_ptr).format as u32 };
 
     let gl_ctx = app.gl_ctx.as_mut().unwrap();
-    let shader: &Shader;
-    if fmt == AVPixelFormat::AV_PIX_FMT_YUV420P as i32 as u32 {
-        shader = &gl_ctx.shader_yuv;
+    let shader: &Shader = if fmt == AVPixelFormat::AV_PIX_FMT_YUV420P as i32 as u32 {
+        &gl_ctx.shader_yuv
     } else if fmt == AVPixelFormat::AV_PIX_FMT_NV12 as i32 as u32 {
-        shader = &gl_ctx.shader_nv12;
+        &gl_ctx.shader_nv12
     } else {
         warn!("Unsupported pixel format, skipping frame");
         app.frame_queue.commit_read();
         return;
-    }
+    };
     unsafe {
         // TODO: make the GL context explicitly current before creating/uploading
         // textures, instead of relying on the context left current by bootstrap
@@ -240,38 +238,35 @@ pub fn process_drm(app: &mut App) {
         warn!("Frame with AV_NOPTS_VALUE (no pts), skipping timing");
     }
 
-    if app.timing.is_none() {
-        if let Some(ref decoder) = app.decoder {
-            app.timing = Some(Timing::new(decoder.time_base));
-            debug!("Timing initialized: time_base={}", decoder.time_base);
-        }
+    if let Some(ref decoder) = app.decoder
+        && app.timing.is_none()
+    {
+        app.timing = Some(Timing::new(decoder.time_base));
+        debug!("Timing initialized: time_base={}", decoder.time_base);
     }
 
-    if let Some(last_pts) = app.last_pts {
-        if !is_nop && last_pts != AV_NOPTS_VALUE && pts < last_pts - 100 {
-            if let Some(ref decoder) = app.decoder {
-                app.timing = Some(Timing::new(decoder.time_base));
-                debug!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
-            }
-        }
-    }
-    if !is_nop {
+    if !is_nop
+        && let Some(last_pts) = app.last_pts
+        && last_pts != AV_NOPTS_VALUE
+        && last_pts - 100 >= pts
+        && let Some(ref decoder) = app.decoder
+    {
+        app.timing = Some(Timing::new(decoder.time_base));
+        debug!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
         app.last_pts = Some(pts);
     }
 
-    if let Some(ref timing) = app.timing {
-        if !is_nop {
-            if timing.should_drop(pts, now) {
-                app.frame_queue.commit_read();
-                warn!("Frame dropped (pts={})", pts);
-                return;
-            }
+    if !is_nop && let Some(ref timing) = app.timing {
+        if timing.should_drop(pts, now) {
+            app.frame_queue.commit_read();
+            warn!("Frame dropped (pts={})", pts);
+            return;
+        }
 
-            let render_time = timing.render_time(pts);
-            if now < render_time {
-                let sleep_dur = render_time - now;
-                std::thread::sleep(sleep_dur);
-            }
+        let render_time = timing.render_time(pts);
+        if now < render_time {
+            let sleep_dur = render_time - now;
+            std::thread::sleep(sleep_dur);
         }
     }
 
