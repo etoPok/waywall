@@ -5,13 +5,12 @@ use calloop::ping::PingSource;
 use calloop::timer::Timer;
 use calloop::{EventLoop, LoopSignal};
 use calloop_wayland_source::WaylandSource;
-use ffmpeg_sys_next::AVPixelFormat;
+use ffmpeg_sys_next::{AVFrame, AVPixelFormat};
 use tracing::{debug, error, info, warn};
 use wayland_client::{Connection, EventQueue};
 
 use crate::app::state::App;
 use crate::shader::Shader;
-use crate::timing::Timing;
 use crate::vaapi_converter::VaapiConverter;
 
 pub fn build_common_loop(
@@ -51,7 +50,7 @@ pub fn run_with<F>(
     on_frame: F,
 ) -> anyhow::Result<()>
 where
-    F: Fn(&mut App) + 'static,
+    F: Fn(&mut App, *mut AVFrame) + 'static,
 {
     let (mut event_loop, mut app, loop_signal) =
         build_common_loop(app, conn, queue, error_ping_source)?;
@@ -59,7 +58,7 @@ where
     event_loop
         .handle()
         .insert_source(ping_source, move |(), _, app| {
-            on_frame(app);
+            common_loop(app, &on_frame);
         })
         .map_err(|e| anyhow::anyhow!("Error registering decoder ping: {}", e))?;
 
@@ -108,7 +107,7 @@ pub fn run_egl_gl(
         queue,
         ping_source,
         error_ping_source,
-        process_egl_gl,
+        on_egl_gl_frame,
     )
 }
 
@@ -125,13 +124,14 @@ pub fn run_drm(
         queue,
         ping_source,
         error_ping_source,
-        process_drm,
+        on_drm_frame,
     )
 }
 
-fn process_egl_gl(app: &mut App) {
-    let now = Instant::now();
-
+pub fn common_loop<F>(app: &mut App, on_frame: &F)
+where
+    F: Fn(&mut App, *mut AVFrame),
+{
     let frame_ptr_opt = app.frame_queue.try_get_read_slot();
     let frame_ptr = match frame_ptr_opt {
         Some(ptr) => ptr,
@@ -140,37 +140,26 @@ fn process_egl_gl(app: &mut App) {
 
     let pts = unsafe { (*frame_ptr).pts };
 
-    if app.timing.is_none()
-        && let Some(ref decoder) = app.decoder
-    {
-        app.timing = Some(Timing::new(decoder.time_base));
-        debug!("Timing initialized: time_base={}", decoder.time_base);
-    }
-
-    if let Some(last_pts) = app.last_pts
-        && pts < last_pts - 100
-        && let Some(ref decoder) = app.decoder
-    {
-        app.timing = Some(Timing::new(decoder.time_base));
-        debug!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
-    }
-    app.last_pts = Some(pts);
-
-    if let Some(ref timing) = app.timing {
-        if timing.should_drop(pts, now) {
+    app.timing.start_once();
+    app.timing.update(pts);
+    match app.timing.get_delay(pts) {
+        -1 => {
             app.frame_queue.commit_read();
-            warn!("Frame dropped (pts={})", pts);
+            debug!("Frame dropped");
             return;
         }
-
-        let render_time = timing.render_time(pts);
-        if now < render_time {
-            let sleep_dur = render_time - now;
-            std::thread::sleep(sleep_dur);
+        0 => {}
+        delay_us => {
+            debug!("Sleep thread");
+            std::thread::sleep(Duration::from_micros(delay_us as u64));
         }
     }
 
-    let fmt = unsafe { (*frame_ptr).format as u32 };
+    on_frame(app, frame_ptr);
+}
+
+fn on_egl_gl_frame(app: &mut App, frame: *mut AVFrame) {
+    let fmt = unsafe { (*frame).format as u32 };
 
     let gl_ctx = app.gl_ctx.as_mut().unwrap();
     let shader: &Shader = if fmt == AVPixelFormat::AV_PIX_FMT_YUV420P as i32 as u32 {
@@ -186,11 +175,11 @@ fn process_egl_gl(app: &mut App) {
         // TODO: make the GL context explicitly current before creating/uploading
         // textures, instead of relying on the context left current by bootstrap
         if gl_ctx.textures.is_empty() {
-            gl_ctx.textures = crate::render::frame::init_textures(frame_ptr);
+            gl_ctx.textures = crate::render::frame::init_textures(frame);
             debug!("Textures created ({} textures)", gl_ctx.textures.len());
         }
 
-        crate::render::frame::upload_frame(&gl_ctx.textures, frame_ptr);
+        crate::render::frame::upload_frame(&gl_ctx.textures, frame);
 
         for rs in app.render_states.iter_mut() {
             crate::render::egl::eglMakeCurrent(
@@ -222,69 +211,11 @@ fn process_egl_gl(app: &mut App) {
     app.frame_count += 1;
 }
 
-pub fn process_drm(app: &mut App) {
-    let now = Instant::now();
-
-    let frame_ptr_opt = app.frame_queue.try_get_read_slot();
-    let frame_ptr = match frame_ptr_opt {
-        Some(ptr) => ptr,
-        None => return,
-    };
-
-    const AV_NOPTS_VALUE: i64 = 0x8000000000000000u64 as i64;
-    let pts = unsafe { (*frame_ptr).pts };
-    let is_nop = pts == AV_NOPTS_VALUE;
-    if is_nop {
-        warn!("Frame with AV_NOPTS_VALUE (no pts), skipping timing");
-    }
-
-    if let Some(ref decoder) = app.decoder
-        && app.timing.is_none()
-    {
-        app.timing = Some(Timing::new(decoder.time_base));
-        debug!("Timing initialized: time_base={}", decoder.time_base);
-    }
-
-    if !is_nop
-        && let Some(last_pts) = app.last_pts
-        && last_pts != AV_NOPTS_VALUE
-        && last_pts - 100 >= pts
-        && let Some(ref decoder) = app.decoder
-    {
-        app.timing = Some(Timing::new(decoder.time_base));
-        debug!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
-        app.last_pts = Some(pts);
-    }
-
-    if !is_nop && let Some(ref timing) = app.timing {
-        if timing.should_drop(pts, now) {
-            app.frame_queue.commit_read();
-            warn!("Frame dropped (pts={})", pts);
-            return;
-        }
-
-        let render_time = timing.render_time(pts);
-        if now < render_time {
-            let sleep_dur = render_time - now;
-            std::thread::sleep(sleep_dur);
-        }
-    }
-
+fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
     if app.converter.is_none() {
-        let w = unsafe { (*frame_ptr).width };
-        let h = unsafe { (*frame_ptr).height };
-        let decoder = match app.decoder.as_ref() {
-            Some(d) => d,
-            None => {
-                error!("VAAPI converter: no decoder available");
-                app.frame_queue.commit_read();
-                if let Some(ref signal) = app.loop_signal {
-                    signal.stop();
-                }
-                return;
-            }
-        };
-        let frames = match decoder.hw_frames_ctx() {
+        let w = unsafe { (*frame).width };
+        let h = unsafe { (*frame).height };
+        let frames = match app.decoder.hw_frames_ctx() {
             Some(f) => f,
             None => {
                 error!("VAAPI converter: hw_frames_ctx not available");
@@ -311,7 +242,7 @@ pub fn process_drm(app: &mut App) {
     }
 
     let surface = app.monitors[0].surface.as_ref().unwrap().clone();
-    let wbs = match app.acquire_or_create_buffer(unsafe { &mut *frame_ptr }) {
+    let wbs = match app.acquire_or_create_buffer(unsafe { &mut *frame }) {
         Ok(Some(wbs)) => wbs,
         Ok(None) => {
             app.frame_queue.commit_read();

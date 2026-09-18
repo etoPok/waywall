@@ -1,27 +1,30 @@
 use std::ffi::CString;
 use std::os::raw::c_void;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Ok, Result};
-use calloop::ping;
+use anyhow::{Context, Ok, Result, bail};
+use calloop::ping::{self, PingSource};
 use nix::errno::Errno;
-use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use tracing::{debug, warn};
 use wayland_backend::client::WaylandError;
 use wayland_client::protocol::wl_output::WlOutput;
-use wayland_client::{globals::registry_queue_init, Connection, EventQueue, QueueHandle};
+use wayland_client::{Connection, EventQueue, QueueHandle, globals::registry_queue_init};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
 use crate::cli::args::Args;
 use crate::decoder::Decoder;
 use crate::drm_node::render_node_from_main_device;
+use crate::frame_queue::FrameQueue;
 use crate::render::egl::{
     create_egl_ctx, create_egl_surface, eglDestroyContext, eglDestroySurface, eglMakeCurrent,
     eglSwapInterval, init_egl_display, wl_egl_window_destroy,
 };
 use crate::render::state::{GlContext, RenderState};
+use crate::timing::Timing;
 use crate::wayland::surfaces::create_surface;
 
 use super::state::{App, Monitor};
@@ -43,18 +46,7 @@ pub fn bootstrap(args: &mut Args) -> Result<BootstrapOutput> {
 }
 
 pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
-    let video_path = Path::new(&args.video_path);
-    if !video_path.exists() {
-        anyhow::bail!("Video file does not exist: {}", video_path.display());
-    }
-    let video_path = video_path
-        .canonicalize()
-        .context("Error resolving video path")?;
-    let video_path_str = video_path.to_string_lossy().to_string();
-
-    // ------------------------------------------------------------------
-    // Connect to Wayland
-    // ------------------------------------------------------------------
+    let video_path = canonize_video_path(&args.video_path)?;
 
     let conn = Connection::connect_to_env()
         .context("Could not connect to Wayland server, is WAYLAND_DISPLAY set?")?;
@@ -76,10 +68,6 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
         warn!("wl_viewporter not available, fallback to logical size for EGL");
     }
 
-    // ------------------------------------------------------------------
-    // Initial state
-    // ------------------------------------------------------------------
-
     let mut app = App::new(
         conn.clone(),
         qh.clone(),
@@ -88,6 +76,8 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
         conn.backend().display_ptr() as *mut c_void,
         viewporter,
         None,
+        Decoder::new(),
+        Timing::new(),
     );
 
     let registry = globals.registry();
@@ -120,25 +110,13 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
 
     initialize_gl_egl(&mut app)?;
 
-    // ------------------------------------------------------------------
-    // Start decoder
-    // ------------------------------------------------------------------
-
-    let (ping, ping_source) = ping::make_ping().context("Failed to create decoder wakeup ping")?;
-    let notifier = crate::notifier::Notifier(ping);
-    let (error_ping, error_ping_source) =
-        ping::make_ping().context("Failed to create decoder error ping")?;
-
-    let decoder = Decoder::start(
-        &video_path_str,
-        app.frame_queue.clone(),
-        notifier,
-        error_ping,
-        args.use_hwdec,
+    let (ping_source, error_ping_source) = start_decoder(
+        &mut app.decoder,
+        &mut app.timing,
+        &video_path,
+        &app.frame_queue,
         None,
-    )
-    .context("Failed to start decoder")?;
-    app.decoder = Some(decoder);
+    )?;
 
     Ok(BootstrapOutput {
         app,
@@ -150,14 +128,7 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
 }
 
 pub fn bootstrap_drm(args: &mut Args) -> Result<BootstrapOutput> {
-    let video_path = Path::new(&args.video_path);
-    if !video_path.exists() {
-        anyhow::bail!("Video file does not exist: {}", video_path.display());
-    }
-
-    // ------------------------------------------------------------------
-    // Connect to Wayland
-    // ------------------------------------------------------------------
+    let video_path = canonize_video_path(&args.video_path)?;
 
     let conn = Connection::connect_to_env()
         .context("Could not connect to Wayland server, is WAYLAND_DISPLAY set?")?;
@@ -184,10 +155,6 @@ pub fn bootstrap_drm(args: &mut Args) -> Result<BootstrapOutput> {
     )?;
     let feedback = dmabuf.get_default_feedback(&qh, ());
 
-    // ------------------------------------------------------------------
-    // Initial state
-    // ------------------------------------------------------------------
-
     let mut app = App::new(
         conn.clone(),
         qh.clone(),
@@ -196,6 +163,8 @@ pub fn bootstrap_drm(args: &mut Args) -> Result<BootstrapOutput> {
         std::ptr::null_mut::<c_void>(),
         viewporter,
         Some(dmabuf),
+        Decoder::new(),
+        Timing::new(),
     );
 
     let registry = globals.registry();
@@ -235,29 +204,23 @@ pub fn bootstrap_drm(args: &mut Args) -> Result<BootstrapOutput> {
     }
 
     feedback.destroy();
-    let render_node = render_node_from_main_device(app.dmabuf_main_device.as_ref().unwrap())
-        .context("Failed to resolve compositor render node")?;
-    debug!("Render node: {}", render_node.display());
 
-    // ------------------------------------------------------------------
-    // Start decoder
-    // ------------------------------------------------------------------
+    let render_node = if args.use_hwdec {
+        let rn = render_node_from_main_device(app.dmabuf_main_device.as_ref().unwrap())
+            .context("VAAPI requested but no DRM render node was resolved from the compositor")?;
+        debug!("Render node: {}", rn.display());
+        Some(rn)
+    } else {
+        None
+    };
 
-    let (ping, ping_source) = ping::make_ping().context("Failed to create decoder wakeup ping")?;
-    let notifier = crate::notifier::Notifier(ping);
-    let (error_ping, error_ping_source) =
-        ping::make_ping().context("Failed to create decoder error ping")?;
-
-    let decoder = Decoder::start(
-        video_path.to_string_lossy().as_ref(),
-        app.frame_queue.clone(),
-        notifier,
-        error_ping,
-        args.use_hwdec,
-        Some(&render_node),
-    )
-    .context("Failed to start decoder")?;
-    app.decoder = Some(decoder);
+    let (ping_source, error_ping_source) = start_decoder(
+        &mut app.decoder,
+        &mut app.timing,
+        &video_path,
+        &app.frame_queue,
+        render_node,
+    )?;
 
     Ok(BootstrapOutput {
         app,
@@ -266,6 +229,44 @@ pub fn bootstrap_drm(args: &mut Args) -> Result<BootstrapOutput> {
         ping_source,
         error_ping_source,
     })
+}
+
+fn canonize_video_path(video_path: &str) -> Result<String> {
+    let path = Path::new(video_path);
+    if !path.exists() {
+        bail!("Video path does not exist: {}", video_path);
+    }
+
+    Ok(path
+        .canonicalize()
+        .context("Error resolving video path")?
+        .to_string_lossy()
+        .into_owned())
+}
+
+fn start_decoder(
+    decoder: &mut Decoder,
+    timing: &mut Timing,
+    video_path: &str,
+    frame_queue: &Arc<FrameQueue>,
+    render_node: Option<PathBuf>,
+) -> Result<(PingSource, PingSource)> {
+    let (ping, ping_source) = ping::make_ping().context("Failed to create decoder wakeup ping")?;
+    let (error_ping, error_ping_source) =
+        ping::make_ping().context("Failed to create decoder error ping")?;
+
+    decoder
+        .start(
+            video_path,
+            frame_queue.clone(),
+            ping,
+            error_ping,
+            render_node.as_deref(),
+        )
+        .context("Failed to start decoder")?;
+    timing.configure(decoder.time_base);
+
+    Ok((ping_source, error_ping_source))
 }
 
 fn initialize_gl_egl(app: &mut App) -> Result<(), anyhow::Error> {

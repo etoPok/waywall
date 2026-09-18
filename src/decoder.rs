@@ -11,7 +11,6 @@ use ffmpeg_sys_next::*;
 use tracing::{debug, error, warn};
 
 use crate::frame_queue::FrameQueue;
-use crate::notifier::Notifier;
 
 unsafe extern "C" fn vaapi_get_format(
     ctx: *mut AVCodecContext,
@@ -129,34 +128,49 @@ impl<'a> HwFramesRef<'a> {
 pub struct Decoder {
     pub thread: Option<JoinHandle<()>>,
     pub running: Arc<AtomicBool>,
-    pub time_base: f64,
+    pub time_base: ffmpeg_sys_next::AVRational,
     ctx: *mut AVCodecContext,
 }
 
+impl Default for Decoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Decoder {
+    pub fn new() -> Self {
+        Self {
+            thread: None,
+            running: Arc::new(AtomicBool::new(false)),
+            time_base: ffmpeg_sys_next::AVRational { num: 0, den: 0 },
+            ctx: ptr::null_mut(),
+        }
+    }
+
     pub fn start(
-        path: &str,
+        &mut self,
+        video_path: &str,
         queue: Arc<FrameQueue>,
-        notifier: Notifier,
+        notifier: ping::Ping,
         error_ping: ping::Ping,
-        use_vaapi: bool,
         render_node: Option<&Path>,
-    ) -> Result<Self> {
+    ) -> Result<()> {
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = running.clone();
 
         let mut fmt_ctx: *mut AVFormatContext = std::ptr::null_mut();
-        let path_c = std::ffi::CString::new(path)?;
+        let video_path_c = std::ffi::CString::new(video_path)?;
 
         unsafe {
             let ret = avformat_open_input(
                 &mut fmt_ctx,
-                path_c.as_ptr(),
+                video_path_c.as_ptr(),
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
             );
             if ret != 0 {
-                anyhow::bail!("avformat_open_input failed: {} {}", path, ret);
+                anyhow::bail!("avformat_open_input failed: {} {}", video_path, ret);
             }
 
             let ret = avformat_find_stream_info(fmt_ctx, std::ptr::null_mut());
@@ -199,17 +213,9 @@ impl Decoder {
             }
         }
 
-        if use_vaapi {
-            let Some(drm_node) = render_node else {
-                unsafe {
-                    avcodec_free_context(&mut codec_ctx);
-                    avformat_close_input(&mut fmt_ctx);
-                }
-                anyhow::bail!(
-                    "VAAPI requested but no DRM render node was resolved from the compositor"
-                );
-            };
-            match init_hw_device(codec_ctx, drm_node) {
+        // bootstrap handles the case when hwdec=vaapi but render_node is unresolved
+        if let Some(rn) = render_node {
+            match init_hw_device(codec_ctx, rn) {
                 Ok(v) => v,
                 Err(e) => {
                     unsafe {
@@ -219,7 +225,7 @@ impl Decoder {
                     return Err(e);
                 }
             }
-        }
+        };
 
         unsafe {
             let ret = avcodec_open2(codec_ctx, codec, std::ptr::null_mut());
@@ -229,14 +235,6 @@ impl Decoder {
                 anyhow::bail!("avcodec_open2 failed");
             }
         }
-
-        let time_base = time_base_num as f64 / time_base_den as f64;
-        let pixel_format = unsafe { (*codec_ctx).pix_fmt };
-
-        debug!(
-            "Decoder: {}x{}, time_base={}/{}={}, pix_fmt={:?}",
-            width, height, time_base_num, time_base_den, time_base, pixel_format as i32
-        );
 
         let fmt_ctx_raw = fmt_ctx as usize;
         let codec_ctx_raw = codec_ctx as usize;
@@ -267,12 +265,21 @@ impl Decoder {
             }
         };
 
-        Ok(Self {
-            thread: Some(thread),
-            running,
-            time_base,
-            ctx: codec_ctx,
-        })
+        self.thread = Some(thread);
+        self.running = running;
+        self.time_base = ffmpeg_sys_next::AVRational {
+            num: time_base_num,
+            den: time_base_den,
+        };
+        self.ctx = codec_ctx;
+
+        let pixel_format = unsafe { (*codec_ctx).pix_fmt };
+        debug!(
+            "Decoder: {}x{}, time_base={}/{}, pix_fmt={:?}",
+            width, height, self.time_base.num, self.time_base.den, pixel_format as i32
+        );
+
+        Ok(())
     }
 
     pub fn stop(&self) {
@@ -327,8 +334,8 @@ fn set_video_stream(
                 return Ok((
                     i as i32,
                     stream_ref.codecpar,
-                    stream_ref.time_base.num,
-                    stream_ref.time_base.den,
+                    (*stream_ref).time_base.num,
+                    (*stream_ref).time_base.den,
                     (*stream_ref.codecpar).width,
                     (*stream_ref.codecpar).height,
                 ));
@@ -373,7 +380,7 @@ fn decode_loop(
     mut codec_ctx: *mut AVCodecContext,
     video_stream_idx: i32,
     queue: Arc<FrameQueue>,
-    notifier: Notifier,
+    notifier: ping::Ping,
     running: &AtomicBool,
     error_ping: ping::Ping,
 ) {
@@ -455,13 +462,13 @@ fn decode_loop(
     }
 }
 
-fn drain_decoder(codec_ctx: &mut *mut AVCodecContext, queue: &FrameQueue, notifier: &Notifier) {
+fn drain_decoder(codec_ctx: &mut *mut AVCodecContext, queue: &FrameQueue, notifier: &ping::Ping) {
     loop {
         let slot = queue.get_write_slot();
         let recv_ret = unsafe { avcodec_receive_frame(*codec_ctx, slot) };
         if recv_ret >= 0 {
             queue.commit_write();
-            notifier.0.ping();
+            notifier.ping();
         } else {
             break;
         }

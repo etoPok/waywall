@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use calloop::timer::Timer;
+use ffmpeg_sys_next::AVFrame;
 use tracing::{debug, warn};
 
 use waywall::app::state::App;
@@ -38,14 +39,20 @@ fn main() -> anyhow::Result<()> {
         event_loop
             .handle()
             .insert_source(bootstrap_output.ping_source, move |(), _, app| {
-                process_drm(app, frames);
+                if app.frame_count > frames {
+                    return;
+                }
+                waywall::runtime::event_loop::common_loop(app, &on_drm_frame);
             })
             .map_err(|e| anyhow::anyhow!("Error registering decoder ping: {}", e))?;
     } else {
         event_loop
             .handle()
             .insert_source(bootstrap_output.ping_source, move |(), _, app| {
-                process_egl_gl(app, frames);
+                if app.frame_count > frames {
+                    return;
+                }
+                waywall::runtime::event_loop::common_loop(app, &on_egl_gl_frame);
             })
             .map_err(|e| anyhow::anyhow!("Error registering decoder ping: {}", e))?;
     }
@@ -114,72 +121,25 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn process_egl_gl(app: &mut App, max_frames: u64) {
-    if app.frame_count >= max_frames {
-        return;
-    }
-
-    let frame_ptr_opt = app.frame_queue.try_get_read_slot();
-    let frame_ptr = match frame_ptr_opt {
-        Some(ptr) => ptr,
-        None => return,
-    };
-
+fn on_egl_gl_frame(app: &mut App, frame: *mut AVFrame) {
     unsafe {
         debug!(
             "process_egl_gl: read slot pts={} pkt_dts={} best_effort={} w={} h={} fmt={} ({}) queue_len={}",
-            (*frame_ptr).pts,
-            (*frame_ptr).pkt_dts,
-            (*frame_ptr).best_effort_timestamp,
-            (*frame_ptr).width,
-            (*frame_ptr).height,
-            (*frame_ptr).format,
-            utils::pix_fmt_name((*frame_ptr).format),
+            (*frame).pts,
+            (*frame).pkt_dts,
+            (*frame).best_effort_timestamp,
+            (*frame).width,
+            (*frame).height,
+            (*frame).format,
+            utils::pix_fmt_name((*frame).format),
             app.frame_queue.len()
         );
-    }
-
-    use std::time::Instant;
-    use waywall::timing::Timing;
-
-    let now = Instant::now();
-    let pts = unsafe { (*frame_ptr).pts };
-
-    if app.timing.is_none()
-        && let Some(ref decoder) = app.decoder
-    {
-        app.timing = Some(Timing::new(decoder.time_base));
-        debug!("Timing initialized: time_base={}", decoder.time_base);
-    }
-
-    if let Some(last_pts) = app.last_pts
-        && last_pts - 100 >= pts
-        && let Some(ref decoder) = app.decoder
-    {
-        app.timing = Some(Timing::new(decoder.time_base));
-        debug!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
-    }
-    app.last_pts = Some(pts);
-
-    if let Some(ref timing) = app.timing {
-        if timing.should_drop(pts, now) {
-            app.frame_queue.commit_read();
-            app.frame_count += 1;
-            warn!("Frame dropped (pts={})", pts);
-            return;
-        }
-
-        let render_time = timing.render_time(pts);
-        if now < render_time {
-            let sleep_dur = render_time - now;
-            std::thread::sleep(sleep_dur);
-        }
     }
 
     use ffmpeg_sys_next::AVPixelFormat;
     use waywall::shader::Shader;
 
-    let fmt = unsafe { (*frame_ptr).format as u32 };
+    let fmt = unsafe { (*frame).format as u32 };
     let gl_ctx = app.gl_ctx.as_mut().unwrap();
     let shader: &Shader = if fmt == AVPixelFormat::AV_PIX_FMT_YUV420P as i32 as u32 {
         &gl_ctx.shader_yuv
@@ -192,11 +152,11 @@ fn process_egl_gl(app: &mut App, max_frames: u64) {
     };
     unsafe {
         if gl_ctx.textures.is_empty() {
-            gl_ctx.textures = waywall::render::frame::init_textures(frame_ptr);
+            gl_ctx.textures = waywall::render::frame::init_textures(frame);
             debug!("Textures created ({} textures)", gl_ctx.textures.len());
         }
 
-        waywall::render::frame::upload_frame(&gl_ctx.textures, frame_ptr);
+        waywall::render::frame::upload_frame(&gl_ctx.textures, frame);
 
         for rs in app.render_states.iter_mut() {
             waywall::render::egl::eglMakeCurrent(
@@ -228,88 +188,28 @@ fn process_egl_gl(app: &mut App, max_frames: u64) {
     app.frame_count += 1;
 }
 
-fn process_drm(app: &mut App, max_frames: u64) {
-    if app.frame_count >= max_frames {
-        return;
-    }
-
-    let frame_ptr_opt = app.frame_queue.try_get_read_slot();
-    let frame_ptr = match frame_ptr_opt {
-        Some(ptr) => ptr,
-        None => return,
-    };
-
+fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
     unsafe {
         debug!(
             "process_drm_frame: read slot pts={} pkt_dts={} best_effort={} w={} h={} fmt={} ({}) queue_len={}",
-            (*frame_ptr).pts,
-            (*frame_ptr).pkt_dts,
-            (*frame_ptr).best_effort_timestamp,
-            (*frame_ptr).width,
-            (*frame_ptr).height,
-            (*frame_ptr).format,
-            utils::pix_fmt_name((*frame_ptr).format),
+            (*frame).pts,
+            (*frame).pkt_dts,
+            (*frame).best_effort_timestamp,
+            (*frame).width,
+            (*frame).height,
+            (*frame).format,
+            utils::pix_fmt_name((*frame).format),
             app.frame_queue.len()
         );
     }
 
-    use std::time::Instant;
     use tracing::{error, warn};
-    use waywall::timing::Timing;
     use waywall::vaapi_converter::VaapiConverter;
 
-    let now = Instant::now();
-    const AV_NOPTS_VALUE: i64 = 0x8000000000000000u64 as i64;
-    let pts = unsafe { (*frame_ptr).pts };
-
-    if app.timing.is_none()
-        && let Some(ref decoder) = app.decoder
-    {
-        app.timing = Some(Timing::new(decoder.time_base));
-        debug!("Timing initialized: time_base={}", decoder.time_base);
-    }
-
-    let is_nop = pts == AV_NOPTS_VALUE;
-    if is_nop {
-        warn!("Frame with AV_NOPTS_VALUE (no pts), skipping timing");
-    } else if let Some(last_pts) = app.last_pts
-        && last_pts != AV_NOPTS_VALUE
-        && pts < last_pts
-        && let Some(ref decoder) = app.decoder
-    {
-        app.timing = Some(Timing::new(decoder.time_base));
-        debug!("Timing reset after seek (pts: {} -> {})", last_pts, pts);
-        app.last_pts = Some(pts);
-    }
-
-    if !is_nop && let Some(ref timing) = app.timing {
-        if timing.should_drop(pts, now) {
-            app.frame_queue.commit_read();
-            warn!("Frame dropped (pts={})", pts);
-            return;
-        }
-        let render_time = timing.render_time(pts);
-        if now < render_time {
-            let sleep_dur = render_time - now;
-            std::thread::sleep(sleep_dur);
-        }
-    }
-
     if app.converter.is_none() {
-        let w = unsafe { (*frame_ptr).width };
-        let h = unsafe { (*frame_ptr).height };
-        let decoder = match app.decoder.as_ref() {
-            Some(d) => d,
-            None => {
-                error!("VAAPI converter: no decoder available");
-                app.frame_queue.commit_read();
-                if let Some(ref signal) = app.loop_signal {
-                    signal.stop();
-                }
-                return;
-            }
-        };
-        let hw_frames_ctx = match decoder.hw_frames_ctx() {
+        let w = unsafe { (*frame).width };
+        let h = unsafe { (*frame).height };
+        let hw_frames_ctx = match app.decoder.hw_frames_ctx() {
             Some(f) => f,
             None => {
                 error!("VAAPI converter: hw_frames_ctx not available");
@@ -336,7 +236,7 @@ fn process_drm(app: &mut App, max_frames: u64) {
     }
 
     let surface = app.monitors[0].surface.as_ref().unwrap().clone();
-    let wbs = match app.acquire_or_create_buffer(unsafe { &mut *frame_ptr }) {
+    let wbs = match app.acquire_or_create_buffer(unsafe { &mut *frame }) {
         Ok(Some(wbs)) => wbs,
         Ok(None) => {
             app.frame_queue.commit_read();

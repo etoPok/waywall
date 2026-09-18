@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use calloop::LoopSignal;
-use ffmpeg_sys_next::{av_frame_free, av_frame_unref, AVFrame};
+use ffmpeg_sys_next::{AVFrame, av_frame_free, av_frame_unref};
 use wayland_client::protocol::wl_buffer::WlBuffer;
 use wayland_client::protocol::{
     wl_compositor::WlCompositor, wl_output::WlOutput, wl_surface::WlSurface,
@@ -125,14 +125,14 @@ pub struct App {
     pub render_states: Vec<RenderState>,
 
     // Decoder + Frame Queue
-    pub decoder: Option<Decoder>,
+    pub decoder: Decoder,
     pub frame_queue: Arc<FrameQueue>,
 
     // shaders + geometry + egl_ctx
     pub gl_ctx: Option<GlContext>,
 
     // Timing
-    pub timing: Option<Timing>,
+    pub timing: Timing,
     pub last_pts: Option<i64>,
 
     // Stats
@@ -149,6 +149,8 @@ impl App {
         wl_display: *mut c_void,
         viewporter: Option<WpViewporter>,
         dmabuf: Option<ZwpLinuxDmabufV1>,
+        decoder: Decoder,
+        timing: Timing,
     ) -> Self {
         Self {
             conn,
@@ -158,6 +160,8 @@ impl App {
             viewporter,
             wl_display,
             dmabuf,
+            decoder,
+            timing,
             dmabuf_main_device: None,
             wl_buffer_states: std::array::from_fn(|_| None),
             converter: None,
@@ -165,10 +169,8 @@ impl App {
             loop_signal: None,
             configured: false,
             render_states: Vec::new(),
-            decoder: None,
             frame_queue: Arc::new(FrameQueue::new()),
             gl_ctx: None,
-            timing: None,
             last_pts: None,
             frame_count: 0,
             last_stats_time: None,
@@ -327,9 +329,7 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        if let Some(ref decoder) = self.decoder {
-            decoder.stop();
-        }
+        self.decoder.stop();
 
         self.render_states.clear();
 
