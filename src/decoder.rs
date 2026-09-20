@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result};
-use calloop::ping;
+use calloop::ping::Ping;
 use ffmpeg_sys_next::*;
 use tracing::{debug, error, warn};
 
@@ -128,8 +128,10 @@ impl<'a> HwFramesRef<'a> {
 pub struct Decoder {
     pub thread: Option<JoinHandle<()>>,
     pub running: Arc<AtomicBool>,
+    pub frame_queue: Option<Arc<FrameQueue>>,
     pub time_base: ffmpeg_sys_next::AVRational,
-    ctx: *mut AVCodecContext,
+    codec_ctx: *mut AVCodecContext,
+    fmt_ctx: *mut AVFormatContext,
 }
 
 impl Default for Decoder {
@@ -143,17 +145,19 @@ impl Decoder {
         Self {
             thread: None,
             running: Arc::new(AtomicBool::new(false)),
+            frame_queue: None,
             time_base: ffmpeg_sys_next::AVRational { num: 0, den: 0 },
-            ctx: ptr::null_mut(),
+            codec_ctx: ptr::null_mut(),
+            fmt_ctx: ptr::null_mut(),
         }
     }
 
     pub fn start(
         &mut self,
         video_path: &str,
-        queue: Arc<FrameQueue>,
-        notifier: ping::Ping,
-        error_ping: ping::Ping,
+        frame_queue: Arc<FrameQueue>,
+        notifier: Ping,
+        error_ping: Ping,
         render_node: Option<&Path>,
     ) -> Result<()> {
         let running = Arc::new(AtomicBool::new(true));
@@ -236,6 +240,7 @@ impl Decoder {
             }
         }
 
+        self.frame_queue = Some(frame_queue.clone());
         let fmt_ctx_raw = fmt_ctx as usize;
         let codec_ctx_raw = codec_ctx as usize;
         let thread = match thread::Builder::new()
@@ -247,10 +252,10 @@ impl Decoder {
                     fmt_ctx,
                     codec_ctx,
                     video_stream_idx,
-                    queue,
+                    frame_queue,
                     notifier,
-                    &running_clone,
                     error_ping,
+                    &running_clone,
                 );
             })
             .context("Failed to spawn decoder thread")
@@ -271,7 +276,8 @@ impl Decoder {
             num: time_base_num,
             den: time_base_den,
         };
-        self.ctx = codec_ctx;
+        self.codec_ctx = codec_ctx;
+        self.fmt_ctx = fmt_ctx;
 
         let pixel_format = unsafe { (*codec_ctx).pix_fmt };
         debug!(
@@ -284,15 +290,18 @@ impl Decoder {
 
     pub fn stop(&self) {
         self.running.store(false, Ordering::Relaxed);
+        if let Some(fq) = self.frame_queue.as_ref() {
+            fq.close();
+        }
     }
 
     /// `None` if `use_vaapi=false` or `ctx` is null.
     pub fn hw_device_ctx(&self) -> Option<HwDeviceRef<'_>> {
-        if self.ctx.is_null() {
+        if self.codec_ctx.is_null() {
             return None;
         }
         unsafe {
-            (*self.ctx)
+            (*self.codec_ctx)
                 .hw_device_ctx
                 .as_ref()
                 .map(|r| HwDeviceRef { inner: r })
@@ -301,11 +310,11 @@ impl Decoder {
 
     /// `None` on software fallback or before `get_format` sets it.
     pub fn hw_frames_ctx(&self) -> Option<HwFramesRef<'_>> {
-        if self.ctx.is_null() {
+        if self.codec_ctx.is_null() {
             return None;
         }
         unsafe {
-            (*self.ctx)
+            (*self.codec_ctx)
                 .hw_frames_ctx
                 .as_ref()
                 .map(|r| HwFramesRef { inner: r })
@@ -316,6 +325,19 @@ impl Decoder {
 impl Drop for Decoder {
     fn drop(&mut self) {
         self.stop();
+        if let Some(jh) = self.thread.take() {
+            jh.join().expect("Failed to join decoder thread");
+        }
+
+        unsafe {
+            if !self.fmt_ctx.is_null() {
+                avformat_close_input(&mut self.fmt_ctx);
+            }
+
+            if !self.codec_ctx.is_null() {
+                avcodec_free_context(&mut self.codec_ctx);
+            }
+        }
     }
 }
 
@@ -334,8 +356,8 @@ fn set_video_stream(
                 return Ok((
                     i as i32,
                     stream_ref.codecpar,
-                    (*stream_ref).time_base.num,
-                    (*stream_ref).time_base.den,
+                    stream_ref.time_base.num,
+                    stream_ref.time_base.den,
                     (*stream_ref.codecpar).width,
                     (*stream_ref.codecpar).height,
                 ));
@@ -376,21 +398,19 @@ fn init_hw_device(codec_ctx: *mut AVCodecContext, drm_node: &Path) -> Result<()>
 }
 
 fn decode_loop(
-    mut fmt_ctx: *mut AVFormatContext,
+    fmt_ctx: *mut AVFormatContext,
     mut codec_ctx: *mut AVCodecContext,
     video_stream_idx: i32,
-    queue: Arc<FrameQueue>,
-    notifier: ping::Ping,
+    frame_queue: Arc<FrameQueue>,
+    ping_frame_decoded: Ping,
+    ping_error: Ping,
     running: &AtomicBool,
-    error_ping: ping::Ping,
 ) {
     let mut packet = unsafe { av_packet_alloc() };
     if packet.is_null() {
         error!("Failed to allocate packet");
         return;
     }
-
-    let mut fatal = false;
 
     'decode: while running.load(Ordering::Relaxed) {
         let ret = unsafe { av_read_frame(fmt_ctx, packet) };
@@ -408,7 +428,9 @@ fn decode_loop(
                 // the final frames, causing visible stuttering or frame drops at the loop boundary.
                 unsafe {
                     avcodec_send_packet(codec_ctx, std::ptr::null_mut());
-                    drain_decoder(&mut codec_ctx, &queue, &notifier);
+                    if !drain_decoder(&mut codec_ctx, &frame_queue, &ping_frame_decoded) {
+                        break 'decode;
+                    }
                     av_seek_frame(fmt_ctx, video_stream_idx, 0, AVSEEK_FLAG_BACKWARD);
                     avcodec_flush_buffers(codec_ctx);
                 }
@@ -416,7 +438,7 @@ fn decode_loop(
                 continue;
             } else {
                 error!("Error reading frame: {}", ret);
-                fatal = true;
+                ping_error.ping();
                 break 'decode;
             }
         }
@@ -435,11 +457,15 @@ fn decode_loop(
                     unsafe {
                         av_packet_unref(packet);
                     }
-                    drain_decoder(&mut codec_ctx, &queue, &notifier);
+                    if !drain_decoder(&mut codec_ctx, &frame_queue, &ping_frame_decoded) {
+                        break 'decode;
+                    }
                     sent = true;
                 }
                 ret if ret == AVERROR(EAGAIN) => {
-                    drain_decoder(&mut codec_ctx, &queue, &notifier);
+                    if !drain_decoder(&mut codec_ctx, &frame_queue, &ping_frame_decoded) {
+                        break 'decode;
+                    }
                 }
                 send_ret => {
                     warn!("Error sending packet: {}", send_ret);
@@ -450,27 +476,28 @@ fn decode_loop(
         }
     }
 
-    debug!("Decoder thread exiting");
     unsafe {
         av_packet_free(&mut packet);
-        avcodec_free_context(&mut codec_ctx);
-        avformat_close_input(&mut fmt_ctx);
     }
-
-    if fatal {
-        error_ping.ping();
-    }
+    debug!("Decoder thread finished");
 }
 
-fn drain_decoder(codec_ctx: &mut *mut AVCodecContext, queue: &FrameQueue, notifier: &ping::Ping) {
+fn drain_decoder(
+    codec_ctx: &mut *mut AVCodecContext,
+    frame_queue: &FrameQueue,
+    ping_frame_decoded: &Ping,
+) -> bool {
     loop {
-        let slot = queue.get_write_slot();
+        let slot = frame_queue.get_write_slot();
+        if slot.is_null() {
+            return false;
+        }
         let recv_ret = unsafe { avcodec_receive_frame(*codec_ctx, slot) };
         if recv_ret >= 0 {
-            queue.commit_write();
-            notifier.ping();
+            frame_queue.commit_write();
+            ping_frame_decoded.ping();
         } else {
-            break;
+            return true;
         }
     }
 }

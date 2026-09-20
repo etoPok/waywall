@@ -2,14 +2,17 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Condvar, Mutex};
 
-use ffmpeg_sys_next::{av_frame_alloc, av_frame_free, av_frame_unref, AVFrame};
+use ffmpeg_sys_next::{AVFrame, av_frame_alloc, av_frame_free, av_frame_unref};
 
 const QUEUE_SIZE: usize = 3;
 
 pub struct FrameQueue {
     slots: [*mut AVFrame; QUEUE_SIZE],
+    // indices protected by single-producer, single-consumer design
     write_idx: Cell<u32>,
     read_idx: Cell<u32>,
+    // only accessed while holding `mutex`
+    closed: Cell<bool>,
     count: AtomicU32,
     mutex: Mutex<()>,
     not_empty: Condvar,
@@ -38,6 +41,7 @@ impl FrameQueue {
             slots,
             write_idx: Cell::new(0),
             read_idx: Cell::new(0),
+            closed: Cell::new(false),
             count: AtomicU32::new(0),
             mutex: Mutex::new(()),
             not_empty: Condvar::new(),
@@ -50,10 +54,12 @@ impl FrameQueue {
         let _guard = self
             .not_full
             .wait_while(_guard, |_| {
-                self.count.load(Ordering::Acquire) >= QUEUE_SIZE as u32
+                self.count.load(Ordering::Acquire) >= QUEUE_SIZE as u32 && !self.closed.get()
             })
             .unwrap();
-
+        if self.closed.get() {
+            return std::ptr::null_mut();
+        }
         let idx = self.write_idx.get() as usize % QUEUE_SIZE;
         self.slots[idx]
     }
@@ -80,6 +86,17 @@ impl FrameQueue {
         }
         let idx = self.read_idx.get() as usize % QUEUE_SIZE;
         Some(self.slots[idx])
+    }
+
+    pub fn close(&self) {
+        {
+            // ensure happens-before: lock and release mutex beforehand
+            // so the decoder observes true when subsequently acquiring the mutex
+            let _guard = self.mutex.lock().unwrap();
+            self.closed.set(true);
+        }
+        self.not_empty.notify_one();
+        self.not_full.notify_one();
     }
 
     pub fn len(&self) -> u32 {

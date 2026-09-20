@@ -65,7 +65,7 @@ fn main() -> anyhow::Result<()> {
         .insert_source(grace_timer, move |_, _, app| {
             if app.frame_count >= frames && !grace_clone.get() {
                 debug!(
-                    "DRM test: {} frames committed, waiting 2s for WlBuffer Release events...",
+                    "{} frames committed, waiting 2s for WlBuffer Release events...",
                     frames
                 );
                 grace_clone.set(true);
@@ -82,7 +82,7 @@ fn main() -> anyhow::Result<()> {
                     .count();
                 let in_use = total.saturating_sub(free);
                 debug!(
-                    "DRM test grace expired: total_buffers={}, in_use={}, free={}, frame_count={}",
+                    "total_buffers={}, in_use={}, free={}, frame_count={}",
                     total, in_use, free, app.frame_count
                 );
                 if total == frames as usize && free == 0 {
@@ -99,7 +99,7 @@ fn main() -> anyhow::Result<()> {
                         frames, total
                     );
                 }
-                if let Some(ref signal) = app.loop_signal {
+                if let Some(ref signal) = app.main_loop_signal {
                     signal.stop();
                 }
                 return calloop::timer::TimeoutAction::Drop;
@@ -107,7 +107,7 @@ fn main() -> anyhow::Result<()> {
 
             calloop::timer::TimeoutAction::ToDuration(Duration::from_millis(500))
         })
-        .map_err(|e| anyhow::anyhow!("Error registering DRM grace timer: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Error registering grace timer: {}", e))?;
 
     app.last_stats_time = Some(std::time::Instant::now());
 
@@ -115,7 +115,7 @@ fn main() -> anyhow::Result<()> {
 
     event_loop
         .run(None, &mut app, |_app| {})
-        .context("Error in DRM event loop")?;
+        .context("Error in event loop")?;
 
     drop(app);
     Ok(())
@@ -214,7 +214,7 @@ fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
             None => {
                 error!("VAAPI converter: hw_frames_ctx not available");
                 app.frame_queue.commit_read();
-                if let Some(ref signal) = app.loop_signal {
+                if let Some(ref signal) = app.main_loop_signal {
                     signal.stop();
                 }
                 return;
@@ -227,7 +227,7 @@ fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
             Err(e) => {
                 error!("Failed to create VAAPI converter: {e:#}");
                 app.frame_queue.commit_read();
-                if let Some(ref signal) = app.loop_signal {
+                if let Some(ref signal) = app.main_loop_signal {
                     signal.stop();
                 }
                 return;

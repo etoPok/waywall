@@ -119,7 +119,7 @@ pub struct App {
     pub converter: Option<VaapiConverter>,
 
     pub monitors: Vec<Monitor>,
-    pub loop_signal: Option<LoopSignal>,
+    pub main_loop_signal: Option<LoopSignal>,
     pub configured: bool,
 
     pub render_states: Vec<RenderState>,
@@ -166,7 +166,7 @@ impl App {
             wl_buffer_states: std::array::from_fn(|_| None),
             converter: None,
             monitors: Vec::new(),
-            loop_signal: None,
+            main_loop_signal: None,
             configured: false,
             render_states: Vec::new(),
             frame_queue: Arc::new(FrameQueue::new()),
@@ -329,8 +329,6 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        self.decoder.stop();
-
         self.render_states.clear();
 
         if let Some(gl) = self.gl_ctx.take() {

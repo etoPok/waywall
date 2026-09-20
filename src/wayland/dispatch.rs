@@ -125,7 +125,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, usize> for App {
             }
             zwlr_layer_surface_v1::Event::Closed => {
                 warn!("Layer surface closed by the compositor");
-                if let Some(signal) = &state.loop_signal {
+                if let Some(signal) = &state.main_loop_signal {
                     signal.stop();
                 }
             }

@@ -23,7 +23,7 @@ pub fn build_common_loop(
         EventLoop::try_new().context("Error creating event loop")?;
 
     let loop_signal = event_loop.get_signal();
-    app.loop_signal = Some(loop_signal.clone());
+    app.main_loop_signal = Some(loop_signal.clone());
 
     WaylandSource::new(conn.clone(), queue)
         .insert(event_loop.handle())
@@ -32,7 +32,7 @@ pub fn build_common_loop(
     event_loop
         .handle()
         .insert_source(error_ping_source, |(), _, app| {
-            if let Some(ref signal) = app.loop_signal {
+            if let Some(ref signal) = app.main_loop_signal {
                 signal.stop();
             }
         })
@@ -132,13 +132,12 @@ pub fn common_loop<F>(app: &mut App, on_frame: &F)
 where
     F: Fn(&mut App, *mut AVFrame),
 {
-    let frame_ptr_opt = app.frame_queue.try_get_read_slot();
-    let frame_ptr = match frame_ptr_opt {
-        Some(ptr) => ptr,
+    let frame = match app.frame_queue.try_get_read_slot() {
+        Some(f) => f,
         None => return,
     };
 
-    let pts = unsafe { (*frame_ptr).pts };
+    let pts = unsafe { (*frame).pts };
 
     app.timing.start_once();
     app.timing.update(pts);
@@ -155,7 +154,7 @@ where
         }
     }
 
-    on_frame(app, frame_ptr);
+    on_frame(app, frame);
 }
 
 fn on_egl_gl_frame(app: &mut App, frame: *mut AVFrame) {
@@ -220,7 +219,7 @@ fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
             None => {
                 error!("VAAPI converter: hw_frames_ctx not available");
                 app.frame_queue.commit_read();
-                if let Some(ref signal) = app.loop_signal {
+                if let Some(ref signal) = app.main_loop_signal {
                     signal.stop();
                 }
                 return;
@@ -233,7 +232,7 @@ fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
             Err(e) => {
                 error!("Failed to create VAAPI converter: {e:#}");
                 app.frame_queue.commit_read();
-                if let Some(ref signal) = app.loop_signal {
+                if let Some(ref signal) = app.main_loop_signal {
                     signal.stop();
                 }
                 return;
