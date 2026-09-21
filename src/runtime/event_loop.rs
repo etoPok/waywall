@@ -240,29 +240,33 @@ fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
         }
     }
 
-    let surface = app.monitors[0].surface.as_ref().unwrap().clone();
-    let wbs = match app.acquire_or_create_buffer(unsafe { &mut *frame }) {
-        Ok(Some(wbs)) => wbs,
-        Ok(None) => {
-            app.frame_queue.commit_read();
-            warn!("WlBuffer not free. Dropped frame");
-            return;
-        }
-        Err(e) => {
-            error!("{e:#}");
-            app.frame_queue.commit_read();
-            return;
-        }
+    let (buf, buf_w, buf_h) = {
+        let wbs = match app.acquire_or_create_buffer(unsafe { &mut *frame }) {
+            Ok(Some(wbs)) => wbs,
+            Ok(None) => {
+                app.frame_queue.commit_read();
+                warn!("WlBuffer not free. Dropped frame");
+                return;
+            }
+            Err(e) => {
+                error!("{e:#}");
+                app.frame_queue.commit_read();
+                return;
+            }
+        };
+        (
+            wbs.wl_buffer.as_ref().unwrap().clone(),
+            wbs.drm_frame_wrapper.width,
+            wbs.drm_frame_wrapper.height,
+        )
     };
 
-    surface.attach(wbs.wl_buffer.as_ref(), 0, 0);
-    surface.damage_buffer(
-        0,
-        0,
-        wbs.drm_frame_wrapper.width,
-        wbs.drm_frame_wrapper.height,
-    );
-    surface.commit();
+    for monitor in app.monitors.iter() {
+        let surface = monitor.surface.as_ref().unwrap();
+        surface.attach(Some(&buf), 0, 0);
+        surface.damage_buffer(0, 0, buf_w, buf_h);
+        surface.commit();
+    }
     app.frame_queue.commit_read();
     app.frame_count += 1;
 }
