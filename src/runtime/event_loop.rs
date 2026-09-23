@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use calloop::ping::PingSource;
-use calloop::timer::Timer;
+use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, LoopSignal};
 use calloop_wayland_source::WaylandSource;
 use ffmpeg_sys_next::{AVFrame, AVPixelFormat};
@@ -38,35 +38,11 @@ pub fn build_common_loop(
         })
         .map_err(|e| anyhow::anyhow!("Error registering decoder error ping: {}", e))?;
 
-    Ok((event_loop, app, loop_signal))
-}
-
-pub fn run_with<F>(
-    app: App,
-    conn: Connection,
-    queue: EventQueue<App>,
-    ping_source: PingSource,
-    error_ping_source: PingSource,
-    on_frame: F,
-) -> anyhow::Result<()>
-where
-    F: Fn(&mut App, *mut AVFrame) + 'static,
-{
-    let (mut event_loop, mut app, loop_signal) =
-        build_common_loop(app, conn, queue, error_ping_source)?;
-
-    event_loop
-        .handle()
-        .insert_source(ping_source, move |(), _, app| {
-            common_loop(app, &on_frame);
-        })
-        .map_err(|e| anyhow::anyhow!("Error registering decoder ping: {}", e))?;
-
     let stats_timer = Timer::from_duration(Duration::from_secs(5));
     event_loop
         .handle()
         .insert_source(stats_timer, |_, _, app| {
-            let frames = app.frame_count;
+            let frames = app.frames_per_stats_sample;
             let elapsed = app
                 .last_stats_time
                 .map(|t| t.elapsed().as_secs_f64())
@@ -76,16 +52,43 @@ where
             } else {
                 0.0
             };
-            info!("Stats: {:.1} fps, {} frames", fps, frames);
-            app.frame_count = 0;
+            info!(
+                "Stats: {:.1} fps, {} frames, {} dropped frames",
+                fps, frames, app.dropped_frames
+            );
+            app.frames_per_stats_sample = 0;
             app.last_stats_time = Some(Instant::now());
             calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(5))
         })
         .map_err(|e| anyhow::anyhow!("Error registering stats timer: {}", e))?;
 
     app.last_stats_time = Some(Instant::now());
+
     debug!("Event loop started. Ctrl+C to exit.");
-    unsafe { crate::runtime::signals::ctrlc_setup(loop_signal) };
+    unsafe { crate::runtime::signals::ctrlc_setup(loop_signal.clone()) };
+
+    Ok((event_loop, app, loop_signal))
+}
+
+fn run_with<F>(
+    app: App,
+    conn: Connection,
+    queue: EventQueue<App>,
+    _decoded_frame_ping_source: PingSource,
+    error_ping_source: PingSource,
+    on_frame: F,
+) -> anyhow::Result<()>
+where
+    F: Fn(&mut App, *mut AVFrame) + 'static,
+{
+    let (mut event_loop, mut app, _) = build_common_loop(app, conn, queue, error_ping_source)?;
+
+    let pacer = Timer::immediate();
+    event_loop
+        .handle()
+        .insert_source(pacer, move |_, _, app| pacer_tick(app, &on_frame))
+        .map_err(|e| anyhow::anyhow!("Error registering parcer_tick: {e:#}"))?;
+
     event_loop
         .run(None, &mut app, |_app| {})
         .context("Error in event loop")?;
@@ -128,33 +131,30 @@ pub fn run_drm(
     )
 }
 
-pub fn common_loop<F>(app: &mut App, on_frame: &F)
+pub fn pacer_tick<F>(app: &mut App, on_frame: &F) -> TimeoutAction
 where
-    F: Fn(&mut App, *mut AVFrame),
+    F: Fn(&mut App, *mut AVFrame) + 'static,
 {
-    let frame = match app.frame_queue.try_get_read_slot() {
-        Some(f) => f,
-        None => return,
-    };
-
-    let pts = unsafe { (*frame).pts };
-
-    app.timing.start_once();
-    app.timing.update(pts);
-    match app.timing.get_delay(pts) {
-        -1 => {
-            app.frame_queue.commit_read();
-            debug!("Frame dropped");
-            return;
-        }
-        0 => {}
-        delay_us => {
-            debug!("Sleep thread");
-            std::thread::sleep(Duration::from_micros(delay_us as u64));
+    loop {
+        let frame = match app.frame_queue.try_get_read_slot() {
+            Some(f) => f,
+            None => return TimeoutAction::ToDuration(Duration::from_millis(2)),
+        };
+        let pts = unsafe { (*frame).pts };
+        app.timing.start_once();
+        app.timing.update(pts);
+        match app.timing.get_delay(pts) {
+            -1 => {
+                app.frame_queue.commit_read();
+                app.dropped_frames += 1;
+                debug!("Frame dropped");
+            }
+            0 => {
+                on_frame(app, frame);
+            }
+            d => return TimeoutAction::ToDuration(Duration::from_micros(d as u64)),
         }
     }
-
-    on_frame(app, frame);
 }
 
 fn on_egl_gl_frame(app: &mut App, frame: *mut AVFrame) {
@@ -168,6 +168,7 @@ fn on_egl_gl_frame(app: &mut App, frame: *mut AVFrame) {
     } else {
         warn!("Unsupported pixel format, skipping frame");
         app.frame_queue.commit_read();
+        app.dropped_frames += 1;
         return;
     };
     unsafe {
@@ -207,7 +208,8 @@ fn on_egl_gl_frame(app: &mut App, frame: *mut AVFrame) {
     }
 
     app.frame_queue.commit_read();
-    app.frame_count += 1;
+    app.committed_frames += 1;
+    app.frames_per_stats_sample += 1;
 }
 
 fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
@@ -225,7 +227,7 @@ fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
                 return;
             }
         };
-        match unsafe { VaapiConverter::new(frames.as_ptr(), w, h) } {
+        match unsafe { VaapiConverter::create_nv12_to_bgra_graph_filter(frames.as_ptr(), w, h) } {
             Ok(converter) => {
                 app.converter = Some(converter);
             }
@@ -245,6 +247,7 @@ fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
             Ok(Some(wbs)) => wbs,
             Ok(None) => {
                 app.frame_queue.commit_read();
+                app.dropped_frames += 1;
                 warn!("WlBuffer not free. Dropped frame");
                 return;
             }
@@ -267,6 +270,8 @@ fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
         surface.damage_buffer(0, 0, buf_w, buf_h);
         surface.commit();
     }
+
     app.frame_queue.commit_read();
-    app.frame_count += 1;
+    app.committed_frames += 1;
+    app.frames_per_stats_sample += 1;
 }

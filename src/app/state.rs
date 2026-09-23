@@ -136,7 +136,9 @@ pub struct App {
     pub last_pts: Option<i64>,
 
     // Stats
-    pub frame_count: u64,
+    pub committed_frames: u64,
+    pub dropped_frames: u64,
+    pub frames_per_stats_sample: u64,
     pub last_stats_time: Option<Instant>,
 }
 
@@ -172,7 +174,9 @@ impl App {
             frame_queue: Arc::new(FrameQueue::new()),
             gl_ctx: None,
             last_pts: None,
-            frame_count: 0,
+            committed_frames: 0,
+            dropped_frames: 0,
+            frames_per_stats_sample: 0,
             last_stats_time: None,
         }
     }

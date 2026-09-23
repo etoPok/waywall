@@ -146,7 +146,6 @@ impl Dispatch<WlBuffer, ()> for App {
         if let wl_buffer::Event::Release = event {
             for wbs in state.wl_buffer_states.iter_mut().flatten() {
                 if wbs.wl_buffer.as_ref().is_some_and(|b| b.id() == proxy.id()) {
-                    debug!("wl_buffer free");
                     wbs.in_use = false;
                     break;
                 }

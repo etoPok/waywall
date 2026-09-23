@@ -25,7 +25,11 @@ impl VaapiConverter {
     ///   `AVHWFramesContext`).
     /// - Caller must ensure FFmpeg `libavfilter` is initialized for `VAAPI`
     ///   and that `scale_vaapi`/`buffer`/`buffersink` filters are available.
-    pub unsafe fn new(hw_frames_ctx: *mut AVBufferRef, width: i32, height: i32) -> Result<Self> {
+    pub unsafe fn create_nv12_to_bgra_graph_filter(
+        hw_frames_ctx: *mut AVBufferRef,
+        width: i32,
+        height: i32,
+    ) -> Result<Self> {
         unsafe {
             let mut graph = avfilter_graph_alloc();
             if graph.is_null() {
@@ -178,15 +182,15 @@ impl VaapiConverter {
                 }
             }
 
-            debug!(
-                "VaapiConverter::convert incoming w={} h={} fmt={} pts={} pkt_dts={} best_effort={}",
-                (*vaapi_frame).width,
-                (*vaapi_frame).height,
-                (*vaapi_frame).format,
-                (*vaapi_frame).pts,
-                (*vaapi_frame).pkt_dts,
-                (*vaapi_frame).best_effort_timestamp
-            );
+            // debug!(
+            //     "VaapiConverter::convert incoming w={} h={} fmt={} pts={} pkt_dts={} best_effort={}",
+            //     (*vaapi_frame).width,
+            //     (*vaapi_frame).height,
+            //     (*vaapi_frame).format,
+            //     (*vaapi_frame).pts,
+            //     (*vaapi_frame).pkt_dts,
+            //     (*vaapi_frame).best_effort_timestamp
+            // );
 
             let ret = av_buffersrc_add_frame_flags(
                 self.src_ctx,
@@ -217,6 +221,7 @@ impl Drop for VaapiConverter {
         unsafe {
             if !self.graph.is_null() {
                 avfilter_graph_free(&mut self.graph);
+                debug!("VaapiConverter drop called")
             }
         }
     }

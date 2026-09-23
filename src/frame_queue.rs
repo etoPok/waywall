@@ -28,7 +28,6 @@ impl Default for FrameQueue {
     }
 }
 
-#[allow(dead_code)]
 impl FrameQueue {
     pub fn new() -> Self {
         let mut slots = [std::ptr::null_mut(); QUEUE_SIZE];

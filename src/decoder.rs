@@ -485,7 +485,7 @@ fn decode_loop(
 fn drain_decoder(
     codec_ctx: &mut *mut AVCodecContext,
     frame_queue: &FrameQueue,
-    ping_frame_decoded: &Ping,
+    _ping_frame_decoded: &Ping,
 ) -> bool {
     loop {
         let slot = frame_queue.get_write_slot();
@@ -495,7 +495,6 @@ fn drain_decoder(
         let recv_ret = unsafe { avcodec_receive_frame(*codec_ctx, slot) };
         if recv_ret >= 0 {
             frame_queue.commit_write();
-            ping_frame_decoded.ping();
         } else {
             return true;
         }

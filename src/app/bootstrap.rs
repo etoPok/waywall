@@ -45,7 +45,7 @@ pub fn bootstrap(args: &mut Args) -> Result<BootstrapOutput> {
     }
 }
 
-pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
+pub fn bootstrap_gl_egl(args: &Args) -> Result<BootstrapOutput> {
     let video_path = canonize_video_path(&args.video_path)?;
 
     let conn = Connection::connect_to_env()
@@ -127,7 +127,7 @@ pub fn bootstrap_gl_egl(args: &mut Args) -> Result<BootstrapOutput> {
     })
 }
 
-pub fn bootstrap_drm(args: &mut Args) -> Result<BootstrapOutput> {
+pub fn bootstrap_drm(args: &Args) -> Result<BootstrapOutput> {
     let video_path = canonize_video_path(&args.video_path)?;
 
     let conn = Connection::connect_to_env()

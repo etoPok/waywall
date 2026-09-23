@@ -1,5 +1,3 @@
-use std::cell::Cell;
-use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -20,14 +18,13 @@ fn main() -> anyhow::Result<()> {
 
     let test_args = test_args::parse();
     let frames = test_args.frames;
-    let mut prod_args = test_args.prod;
-    let bootstrap_output = if prod_args.use_hwdec {
-        waywall::app::bootstrap::bootstrap_drm(&mut prod_args)?
+    let bootstrap_output = if test_args.prod.use_hwdec {
+        waywall::app::bootstrap::bootstrap_drm(&test_args.prod)?
     } else {
-        waywall::app::bootstrap::bootstrap_gl_egl(&mut prod_args)?
+        waywall::app::bootstrap::bootstrap_gl_egl(&test_args.prod)?
     };
 
-    let (mut event_loop, mut app, loop_signal) = waywall::runtime::event_loop::build_common_loop(
+    let (mut event_loop, mut app, _) = waywall::runtime::event_loop::build_common_loop(
         bootstrap_output.app,
         bootstrap_output.conn,
         bootstrap_output.queue,
@@ -35,83 +32,60 @@ fn main() -> anyhow::Result<()> {
     )
     .context("build_common_loop")?;
 
-    if prod_args.use_hwdec {
+    if test_args.prod.use_hwdec {
+        let mut stop_drm_test = false;
+        let drm_test_stop_timer = Timer::from_duration(Duration::from_millis(500));
         event_loop
             .handle()
-            .insert_source(bootstrap_output.ping_source, move |(), _, app| {
-                if app.frame_count > frames {
-                    return;
+            .insert_source(drm_test_stop_timer, move |_, _, app| {
+                if app.committed_frames + app.dropped_frames >= frames && !stop_drm_test {
+                    debug!(
+                        "{} frames committed, waiting 2s for WlBuffer Release events...",
+                        frames
+                    );
+                    stop_drm_test = true;
+                    return calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(2));
                 }
-                waywall::runtime::event_loop::common_loop(app, &on_drm_frame);
-            })
-            .map_err(|e| anyhow::anyhow!("Error registering decoder ping: {}", e))?;
-    } else {
-        event_loop
-            .handle()
-            .insert_source(bootstrap_output.ping_source, move |(), _, app| {
-                if app.frame_count > frames {
-                    return;
+
+                if stop_drm_test {
+                    let total = app.wl_buffer_states.iter().filter(|s| s.is_some()).count();
+                    let free = app
+                        .wl_buffer_states
+                        .iter()
+                        .flatten()
+                        .filter(|wbs| !wbs.in_use)
+                        .count();
+                    let in_use = total.saturating_sub(free);
+                    debug!(
+                        "total_buffers={}, in_use={}, free={}, committed_frames={}, dropped_frames={}, total_frames={}",
+                        total, in_use, free, app.committed_frames, app.dropped_frames, (app.dropped_frames + app.committed_frames)
+                    );
+                    if let Some(ref signal) = app.main_loop_signal {
+                        signal.stop();
+                    }
+                    return calloop::timer::TimeoutAction::Drop;
                 }
-                waywall::runtime::event_loop::common_loop(app, &on_egl_gl_frame);
+
+                calloop::timer::TimeoutAction::ToDuration(Duration::from_millis(500))
             })
-            .map_err(|e| anyhow::anyhow!("Error registering decoder ping: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Error registering grace timer: {}", e))?;
     }
 
-    let grace_started = Rc::new(Cell::new(false));
-    let grace_clone = grace_started.clone();
-    let grace_timer = Timer::from_duration(Duration::from_millis(500));
+    let parce = Timer::immediate();
     event_loop
         .handle()
-        .insert_source(grace_timer, move |_, _, app| {
-            if app.frame_count >= frames && !grace_clone.get() {
-                debug!(
-                    "{} frames committed, waiting 2s for WlBuffer Release events...",
-                    frames
-                );
-                grace_clone.set(true);
-                return calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(2));
+        .insert_source(parce, move |_, _, app| {
+            if app.committed_frames + app.dropped_frames >= frames {
+                return calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(1));
             }
 
-            if grace_clone.get() {
-                let total = app.wl_buffer_states.iter().filter(|s| s.is_some()).count();
-                let free = app
-                    .wl_buffer_states
-                    .iter()
-                    .flatten()
-                    .filter(|wbs| !wbs.in_use)
-                    .count();
-                let in_use = total.saturating_sub(free);
-                debug!(
-                    "total_buffers={}, in_use={}, free={}, frame_count={}",
-                    total, in_use, free, app.frame_count
-                );
-                if total == frames as usize && free == 0 {
-                    warn!(
-                        "No WlBuffer Release received in 2s (all {} buffers still in_use). \
-                         WaylandSource may not be dispatching Release correctly; check Dispatch<WlBuffer> (wayland/dispatch.rs:137).",
-                        total
-                    );
-                } else if total == frames as usize {
-                    debug!("Wayland dispatch OK: {} of {} buffers released", free, total);
-                } else {
-                    warn!(
-                        "Unexpected buffer pool state: expected {} buffers, got {}",
-                        frames, total
-                    );
-                }
-                if let Some(ref signal) = app.main_loop_signal {
-                    signal.stop();
-                }
-                return calloop::timer::TimeoutAction::Drop;
+            if test_args.prod.use_hwdec {
+                waywall::runtime::event_loop::pacer_tick(app, &on_drm_frame)
+            } else {
+                waywall::runtime::event_loop::pacer_tick(app, &on_egl_gl_frame)
             }
-
-            calloop::timer::TimeoutAction::ToDuration(Duration::from_millis(500))
         })
-        .map_err(|e| anyhow::anyhow!("Error registering grace timer: {}", e))?;
-
-    app.last_stats_time = Some(std::time::Instant::now());
-
-    unsafe { waywall::runtime::signals::ctrlc_setup(loop_signal) };
+        .map_err(|e| anyhow::anyhow!("Error registering parcer_tick: {}", e))?;
 
     event_loop
         .run(None, &mut app, |_app| {})
@@ -148,6 +122,7 @@ fn on_egl_gl_frame(app: &mut App, frame: *mut AVFrame) {
     } else {
         warn!("Unsupported pixel format, skipping frame");
         app.frame_queue.commit_read();
+        app.dropped_frames += 1;
         return;
     };
     unsafe {
@@ -185,7 +160,8 @@ fn on_egl_gl_frame(app: &mut App, frame: *mut AVFrame) {
     }
 
     app.frame_queue.commit_read();
-    app.frame_count += 1;
+    app.committed_frames += 1;
+    app.frames_per_stats_sample += 1;
 }
 
 fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
@@ -220,7 +196,9 @@ fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
                 return;
             }
         };
-        match unsafe { VaapiConverter::new(hw_frames_ctx.as_ptr(), w, h) } {
+        match unsafe {
+            VaapiConverter::create_nv12_to_bgra_graph_filter(hw_frames_ctx.as_ptr(), w, h)
+        } {
             Ok(converter) => {
                 app.converter = Some(converter);
             }
@@ -240,6 +218,7 @@ fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
             Ok(Some(wbs)) => wbs,
             Ok(None) => {
                 app.frame_queue.commit_read();
+                app.dropped_frames += 1;
                 warn!("WlBuffer not free. Dropped frame");
                 return;
             }
@@ -262,6 +241,8 @@ fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
         surface.damage_buffer(0, 0, buf_w, buf_h);
         surface.commit();
     }
+
     app.frame_queue.commit_read();
-    app.frame_count += 1;
+    app.committed_frames += 1;
+    app.frames_per_stats_sample += 1;
 }

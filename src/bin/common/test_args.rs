@@ -28,7 +28,7 @@ where
         return Err("missing program name".into());
     }
 
-    let mut frames: u64 = 0;
+    let mut frames: u64 = u64::MAX;
     let mut rest: Vec<String> = vec![args[0].clone()];
 
     let mut i = 1;

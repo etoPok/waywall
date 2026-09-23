@@ -1,5 +1,6 @@
 use std::ffi::CStr;
 
+#[allow(dead_code)]
 pub fn pix_fmt_name(fmt: i32) -> String {
     let name_ptr = unsafe {
         let pix_fmt = if (-1..=266).contains(&fmt) {
@@ -12,6 +13,9 @@ pub fn pix_fmt_name(fmt: i32) -> String {
     if name_ptr.is_null() {
         format!("unknown({fmt})")
     } else {
-        unsafe { CStr::from_ptr(name_ptr) }.to_string_lossy().into_owned()
+        unsafe { CStr::from_ptr(name_ptr) }
+            .to_string_lossy()
+            .into_owned()
     }
 }
+
