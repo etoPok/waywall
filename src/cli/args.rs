@@ -31,7 +31,7 @@ where
 
     let mut video_path: Option<String> = None;
     let mut outputs: Vec<String> = Vec::new();
-    let mut use_hwdec: bool = true;
+    let mut use_hwdec: bool = false;
 
     let mut i = 1;
     while i < args.len() {

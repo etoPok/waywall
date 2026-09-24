@@ -47,10 +47,10 @@ cargo build --release
 waywall /path/to/video.mp4
 
 # Specify multiple outputs
-./target/release/waywall -o eDP-1,DP-3 /path/to/video.mp4
+waywall -o eDP-1,DP-3 /path/to/video.mp4
 
 # Hardware-accelerated decoding via VA-API
-waywall -o eDP-1 --hwdec vaapi /path/to/video.mp4
+waywall --hwdec vaapi -o eDP-1 /path/to/video.mp4
 ```
 
 ### CLI Flags
@@ -58,7 +58,7 @@ waywall -o eDP-1 --hwdec vaapi /path/to/video.mp4
 | Flag | Values | Default | Notes |
 |------|--------|---------|-------|
 | `-h, --help` | | | Shows help |
-| `-o, --output` | connector name | all outputs | Can be repeated or comma-separated (e.g. `-o eDP-1,DP-3`) |
+| `-o, --output` | output name | all outputs | For example, in Hyprland you can se the name of your outputs with `hyprctl monitors` |
 | `--hwdec` | `no` or `vaapi` | `no` | Enables hardware-accelerated decoding. `vaapi` uses the DRM pipeline resolving the compositor render node via VA-API; `no` uses software decoding with EGL/GL rendering. Requires a VA-API capable FFmpeg/driver and `/dev/dri/renderD*` access |
 | `<video_path>` | file path | required | mp4 video path |
 
@@ -87,8 +87,8 @@ ffmpeg -i original.mp4 \
 - **Resize not implemented**: monitor resolution changes do not
   resize `wl_egl_window`.
 
-- **4K 60fps video performance**: videos running at 3840×2160 at 60 fps
-  may exhibit indefinite frame loss
+- **4K at 60fps video performance via EGL/GL**: `--hwdec no` may cause
+  indefinite frame drops due to GPU upload overhead. Whenever possible, use `--hwdec vaapi` to improve performance.
 
 ## Troubleshooting
 

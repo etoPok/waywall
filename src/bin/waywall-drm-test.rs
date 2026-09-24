@@ -48,18 +48,6 @@ fn main() -> anyhow::Result<()> {
                 }
 
                 if stop_drm_test {
-                    let total = app.wl_buffer_states.iter().filter(|s| s.is_some()).count();
-                    let free = app
-                        .wl_buffer_states
-                        .iter()
-                        .flatten()
-                        .filter(|wbs| !wbs.in_use)
-                        .count();
-                    let in_use = total.saturating_sub(free);
-                    debug!(
-                        "total_buffers={}, in_use={}, free={}, committed_frames={}, dropped_frames={}, total_frames={}",
-                        total, in_use, free, app.committed_frames, app.dropped_frames, (app.dropped_frames + app.committed_frames)
-                    );
                     if let Some(ref signal) = app.main_loop_signal {
                         signal.stop();
                     }
@@ -90,6 +78,25 @@ fn main() -> anyhow::Result<()> {
     event_loop
         .run(None, &mut app, |_app| {})
         .context("Error in event loop")?;
+
+    if test_args.prod.use_hwdec {
+        let total = app.wl_buffer_states.iter().filter(|s| s.is_some()).count();
+        let in_use = app
+            .wl_buffer_states
+            .iter()
+            .flatten()
+            .filter(|wbs| wbs.in_use)
+            .count();
+        debug!(
+            "total_buffers={}/{}, in_use={}, committed_frames={}, dropped_frames={}, total_frames={}",
+            total,
+            app.wl_buffer_states.len(),
+            in_use,
+            app.committed_frames,
+            app.dropped_frames,
+            (app.dropped_frames + app.committed_frames)
+        );
+    }
 
     drop(app);
     Ok(())

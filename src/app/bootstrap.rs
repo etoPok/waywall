@@ -46,7 +46,7 @@ pub fn bootstrap(args: &mut Args) -> Result<BootstrapOutput> {
 }
 
 pub fn bootstrap_gl_egl(args: &Args) -> Result<BootstrapOutput> {
-    let video_path = canonize_video_path(&args.video_path)?;
+    let video_path = canonicalize_video_path(&args.video_path)?;
 
     let conn = Connection::connect_to_env()
         .context("Could not connect to Wayland server, is WAYLAND_DISPLAY set?")?;
@@ -128,7 +128,7 @@ pub fn bootstrap_gl_egl(args: &Args) -> Result<BootstrapOutput> {
 }
 
 pub fn bootstrap_drm(args: &Args) -> Result<BootstrapOutput> {
-    let video_path = canonize_video_path(&args.video_path)?;
+    let video_path = canonicalize_video_path(&args.video_path)?;
 
     let conn = Connection::connect_to_env()
         .context("Could not connect to Wayland server, is WAYLAND_DISPLAY set?")?;
@@ -231,7 +231,7 @@ pub fn bootstrap_drm(args: &Args) -> Result<BootstrapOutput> {
     })
 }
 
-fn canonize_video_path(video_path: &str) -> Result<String> {
+fn canonicalize_video_path(video_path: &str) -> Result<String> {
     let path = Path::new(video_path);
     if !path.exists() {
         bail!("Video path does not exist: {}", video_path);
