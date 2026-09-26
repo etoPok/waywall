@@ -1,3 +1,4 @@
+use anyhow::Result;
 use ffmpeg_sys_next::*;
 use tracing::debug;
 
@@ -20,10 +21,26 @@ pub struct DrmFrame {
     pub width: i32,
     pub height: i32,
     pub format: u32,
-    pub va_surface_id: u64,
+    pub va_surface_id: *mut u8,
+}
+
+impl Default for DrmFrame {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DrmFrame {
+    pub fn new() -> Self {
+        Self {
+            layers: Vec::new(),
+            width: 0,
+            height: 0,
+            format: 0,
+            va_surface_id: std::ptr::null_mut(),
+        }
+    }
+
     /// Maps a VAAPI `AVFrame` to a `DRM_PRIME` frame and extracts its descriptor.
     ///
     /// # Safety
@@ -34,18 +51,14 @@ impl DrmFrame {
     /// - `drm_frame` must be a valid `&mut *mut AVFrame`. It may be null (a new
     ///   frame will be allocated with `av_frame_alloc`) or point to a valid
     ///   `AVFrame`. On success the caller owns the `*mut AVFrame` stored in
-    ///   `*drm_frame` and must free it with `av_frame_free`; on failure it is
-    ///   freed internally and set to null.
+    ///   `*drm_frame` and must free it with `av_frame_free`.
     /// - Both frames must not be accessed concurrently from other threads during
     ///   the call. The returned `DrmFrame` borrows file descriptors from
     ///   `AVDRMFrameDescriptor.objects[].fd` which remain valid while `*drm_frame`
     ///   is alive.
     /// - Caller must ensure `av_hwframe_map` and `AVDRMFrameDescriptor` layout
     ///   match the linked `ffmpeg`/`libva` version.
-    pub unsafe fn map(
-        frame: *mut AVFrame,
-        drm_frame: &mut *mut AVFrame,
-    ) -> Result<Self, anyhow::Error> {
+    pub unsafe fn map(&mut self, frame: *mut AVFrame, drm_frame: &mut *mut AVFrame) -> Result<()> {
         unsafe {
             if drm_frame.is_null() {
                 *drm_frame = av_frame_alloc();
@@ -68,14 +81,17 @@ impl DrmFrame {
                 anyhow::bail!("AVDRMFrameDescriptor is null after map");
             }
 
-            let mut layers = Vec::new();
+            self.layers.clear();
             for layer_idx in 0..(*drm_frame_descriptor).nb_layers {
                 let mut planes = Vec::new();
                 let layer = &(*drm_frame_descriptor).layers[layer_idx as usize];
 
                 debug!(
-                    "layer[{}] format {:#x} ({}), nb_planes={}",
-                    layer_idx, layer.format, layer.format, layer.nb_planes
+                    "drm_frame_wrapper: nb_layers={}, layer[{}], layer_format={:#x} ({}), ",
+                    (*drm_frame_descriptor).nb_layers,
+                    layer_idx,
+                    layer.format,
+                    layer.format
                 );
 
                 for plane_idx in 0..layer.nb_planes {
@@ -89,7 +105,8 @@ impl DrmFrame {
                     let obj = &(*drm_frame_descriptor).objects[obj_idx];
 
                     debug!(
-                        "object[{}]: fd={}, size={}, modifier={:#x} plane[{}] offset={} pitch={}",
+                        "drm_frame_wrapper: nb_planes={}, object[{}], fd={}, size={}, modifier={:#x}, plane[{}], plane_offset={}, plane_pitch={}",
+                        layer.nb_planes,
                         obj_idx,
                         obj.fd,
                         obj.size,
@@ -109,41 +126,22 @@ impl DrmFrame {
                     });
                 }
 
-                layers.push(DrmLayer {
+                self.layers.push(DrmLayer {
                     format: layer.format,
                     planes,
                 });
             }
 
-            if layers.is_empty() {
-                av_frame_free(drm_frame);
+            if self.layers.is_empty() {
                 anyhow::bail!("No DRM layers found in descriptor");
             }
 
-            let width = (*frame).width;
-            let height = (*frame).height;
-            let format = (*drm_frame_descriptor).layers[0].format;
+            self.width = (*frame).width;
+            self.height = (*frame).height;
+            self.format = (*drm_frame_descriptor).layers[0].format;
+            self.va_surface_id = (*frame).data[3];
 
-            debug!(
-                "Mapped VAAPI frame pix_fmt={} ({}) to DRM_PRIME: {}x{} drm_fourcc={:#x} ({}) layers={}",
-                (*frame).format,
-                (*frame).format as u32,
-                width,
-                height,
-                format,
-                format,
-                layers.len(),
-            );
-
-            let va_surface_id = (*frame).data[3] as u64;
-
-            Ok(DrmFrame {
-                layers,
-                width,
-                height,
-                format,
-                va_surface_id,
-            })
+            Ok(())
         }
     }
 }

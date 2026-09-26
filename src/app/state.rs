@@ -88,6 +88,25 @@ pub struct WlBufferState {
     pub in_use: bool,
 }
 
+impl Default for WlBufferState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WlBufferState {
+    pub fn new() -> Self {
+        Self {
+            wl_buffer: None,
+            bgra_frame: std::ptr::null_mut(),
+            drm_frame: std::ptr::null_mut(),
+            drm_frame_wrapper: DrmFrame::new(),
+            params: None,
+            in_use: false,
+        }
+    }
+}
+
 impl Drop for WlBufferState {
     fn drop(&mut self) {
         unsafe {
@@ -181,153 +200,84 @@ impl App {
         }
     }
 
-    pub fn acquire_or_create_buffer(
+    pub fn get_or_create_wl_buffer(
         &mut self,
         vaapi_frame: &mut AVFrame,
     ) -> anyhow::Result<Option<&WlBufferState>> {
-        let reusable_idx = self
+        let Some(wl_buffer_state) = self
             .wl_buffer_states
-            .iter()
-            .position(|s| s.as_ref().is_some_and(|wbs| !wbs.in_use));
+            .iter_mut()
+            .find(|s| s.as_ref().is_some_and(|wbs| !wbs.in_use) || s.is_none())
+        else {
+            return Ok(None);
+        };
 
-        if let Some(idx) = reusable_idx {
-            let new_wrapper = {
-                let converter = self
-                    .converter
-                    .as_mut()
-                    .ok_or_else(|| anyhow::anyhow!("VaapiConverter not initialized"))?;
-                let wbs = self.wl_buffer_states[idx].as_mut().unwrap();
+        if wl_buffer_state.is_some() {
+            let wbs = wl_buffer_state.as_mut().unwrap();
 
-                unsafe {
-                    if !wbs.bgra_frame.is_null() {
-                        av_frame_unref(wbs.bgra_frame);
-                    }
-                    if !wbs.drm_frame.is_null() {
-                        av_frame_unref(wbs.drm_frame);
-                    }
+            unsafe {
+                if !wbs.bgra_frame.is_null() {
+                    av_frame_unref(wbs.bgra_frame);
                 }
-
-                unsafe { converter.convert(vaapi_frame as *mut AVFrame, &mut wbs.bgra_frame) }
-                    .map_err(|e| anyhow::anyhow!("VaapiConvert reuse failed: {e:#}"))?;
-
-                unsafe { DrmFrame::map(wbs.bgra_frame, &mut wbs.drm_frame) }.map_err(|e| {
-                    unsafe {
-                        av_frame_free(&mut wbs.bgra_frame);
-                    }
-                    anyhow::anyhow!("Drm map reuse failed: {e:#}")
-                })?
-            };
-
-            {
-                let wbs = self.wl_buffer_states[idx].as_mut().unwrap();
-                if let Some(old_buf) = wbs.wl_buffer.take() {
-                    old_buf.destroy();
-                }
-                if let Some(old_params) = wbs.params.take() {
-                    old_params.destroy();
+                if !wbs.drm_frame.is_null() {
+                    av_frame_unref(wbs.drm_frame);
                 }
             }
 
-            let wbs = self.wl_buffer_states[idx].as_mut().unwrap();
-            wbs.drm_frame_wrapper = new_wrapper;
-
-            let params = self.dmabuf.as_ref().unwrap().create_params(&self.qh, ());
-
-            let mut plane_idx = 0u32;
-            for layer in wbs.drm_frame_wrapper.layers.iter() {
-                for plane in layer.planes.iter() {
-                    let borrowed_fd =
-                        unsafe { std::os::unix::io::BorrowedFd::borrow_raw(plane.fd) };
-                    params.add(
-                        borrowed_fd,
-                        plane_idx,
-                        plane.offset,
-                        plane.stride,
-                        plane.modifier_hi,
-                        plane.modifier_lo,
-                    );
-                    plane_idx += 1;
-                }
+            if let Some(old_buf) = wbs.wl_buffer.take() {
+                old_buf.destroy();
             }
-
-            let wl_buffer = params.create_immed(
-                wbs.drm_frame_wrapper.width,
-                wbs.drm_frame_wrapper.height,
-                wbs.drm_frame_wrapper.format,
-                Flags::empty(),
-                &self.qh,
-                (),
-            );
-
-            wbs.wl_buffer = Some(wl_buffer);
-            wbs.params = Some(params);
-            wbs.in_use = true;
-            return Ok(self.wl_buffer_states[idx].as_ref());
+            if let Some(old_params) = wbs.params.take() {
+                old_params.destroy();
+            }
+        } else {
+            wl_buffer_state.replace(WlBufferState::new());
         }
 
-        let free_idx = self.wl_buffer_states.iter().position(|s| s.is_none());
-        if let Some(idx) = free_idx {
-            let converter = self
-                .converter
-                .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("VaapiConverter not initialized"))?;
+        let converter = self
+            .converter
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("VaapiConverter not initialized"))?;
 
-            let mut bgra_frame: *mut AVFrame = std::ptr::null_mut();
-            unsafe { converter.convert(vaapi_frame as *mut AVFrame, &mut bgra_frame) }
-                .map_err(|e| anyhow::anyhow!("VaapiConvert alloc failed: {e:#}"))?;
+        let wbs = wl_buffer_state.as_mut().unwrap();
+        unsafe { converter.convert(vaapi_frame as *mut AVFrame, &mut wbs.bgra_frame) }?;
+        unsafe {
+            wbs.drm_frame_wrapper
+                .map(wbs.bgra_frame, &mut wbs.drm_frame)
+        }?;
 
-            let mut drm_frame: *mut AVFrame = std::ptr::null_mut();
-            let drm_wrapper = match unsafe { DrmFrame::map(bgra_frame, &mut drm_frame) } {
-                Ok(v) => v,
-                Err(e) => {
-                    unsafe {
-                        ffmpeg_sys_next::av_frame_free(&mut bgra_frame);
-                    }
-                    return Err(anyhow::anyhow!("Drm map alloc failed: {e:#}"));
-                }
-            };
+        let params = self.dmabuf.as_ref().unwrap().create_params(&self.qh, ());
 
-            let params = self.dmabuf.as_ref().unwrap().create_params(&self.qh, ());
-            let mut plane_idx = 0u32;
-
-            for layer in drm_wrapper.layers.iter() {
-                for plane in layer.planes.iter() {
-                    let borrowed_fd =
-                        unsafe { std::os::unix::io::BorrowedFd::borrow_raw(plane.fd) };
-                    params.add(
-                        borrowed_fd,
-                        plane_idx,
-                        plane.offset,
-                        plane.stride,
-                        plane.modifier_hi,
-                        plane.modifier_lo,
-                    );
-                    plane_idx += 1;
-                }
+        let mut plane_idx = 0u32;
+        for layer in wbs.drm_frame_wrapper.layers.iter() {
+            for plane in layer.planes.iter() {
+                let borrowed_fd = unsafe { std::os::unix::io::BorrowedFd::borrow_raw(plane.fd) };
+                params.add(
+                    borrowed_fd,
+                    plane_idx,
+                    plane.offset,
+                    plane.stride,
+                    plane.modifier_hi,
+                    plane.modifier_lo,
+                );
+                plane_idx += 1;
             }
-
-            let wl_buffer = params.create_immed(
-                drm_wrapper.width,
-                drm_wrapper.height,
-                drm_wrapper.format,
-                Flags::empty(),
-                &self.qh,
-                (),
-            );
-
-            self.wl_buffer_states[idx] = Some(WlBufferState {
-                wl_buffer: Some(wl_buffer),
-                params: Some(params),
-                in_use: true,
-                drm_frame_wrapper: drm_wrapper,
-                drm_frame,
-                bgra_frame,
-            });
-
-            return Ok(self.wl_buffer_states[idx].as_ref());
         }
 
-        Ok(None)
+        let wl_buffer = params.create_immed(
+            wbs.drm_frame_wrapper.width,
+            wbs.drm_frame_wrapper.height,
+            wbs.drm_frame_wrapper.format,
+            Flags::empty(),
+            &self.qh,
+            (),
+        );
+
+        wbs.wl_buffer = Some(wl_buffer);
+        wbs.params = Some(params);
+        wbs.in_use = true;
+
+        Ok(wl_buffer_state.as_ref())
     }
 }
 

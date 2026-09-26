@@ -97,38 +97,33 @@ where
     Ok(())
 }
 
-pub fn run_egl_gl(
+pub fn run(
+    args: &crate::cli::args::Args,
     app: App,
     conn: Connection,
     queue: EventQueue<App>,
-    ping_source: PingSource,
+    frame_decoded_ping_source: PingSource,
     error_ping_source: PingSource,
 ) -> anyhow::Result<()> {
-    run_with(
-        app,
-        conn,
-        queue,
-        ping_source,
-        error_ping_source,
-        on_egl_gl_frame,
-    )
-}
-
-pub fn run_drm(
-    app: App,
-    conn: Connection,
-    queue: EventQueue<App>,
-    ping_source: PingSource,
-    error_ping_source: PingSource,
-) -> anyhow::Result<()> {
-    run_with(
-        app,
-        conn,
-        queue,
-        ping_source,
-        error_ping_source,
-        on_drm_frame,
-    )
+    if args.use_hwdec {
+        run_with(
+            app,
+            conn,
+            queue,
+            frame_decoded_ping_source,
+            error_ping_source,
+            on_drm_frame,
+        )
+    } else {
+        run_with(
+            app,
+            conn,
+            queue,
+            frame_decoded_ping_source,
+            error_ping_source,
+            on_egl_gl_frame,
+        )
+    }
 }
 
 pub fn pacer_tick<F>(app: &mut App, on_frame: &F) -> TimeoutAction
@@ -243,7 +238,7 @@ fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
     }
 
     let (buf, buf_w, buf_h) = {
-        let wbs = match app.acquire_or_create_buffer(unsafe { &mut *frame }) {
+        let wbs = match app.get_or_create_wl_buffer(unsafe { &mut *frame }) {
             Ok(Some(wbs)) => wbs,
             Ok(None) => {
                 app.frame_queue.commit_read();

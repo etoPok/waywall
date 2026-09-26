@@ -1,7 +1,6 @@
 use std::ffi::CString;
 use std::os::raw::c_void;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Ok, Result, bail};
@@ -15,19 +14,16 @@ use wayland_client::{Connection, EventQueue, QueueHandle, globals::registry_queu
 use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 
+use super::state::{App, Monitor};
 use crate::cli::args::Args;
 use crate::decoder::Decoder;
 use crate::drm_node::render_node_from_main_device;
-use crate::frame_queue::FrameQueue;
 use crate::render::egl::{
     create_egl_ctx, create_egl_surface, eglDestroyContext, eglDestroySurface, eglMakeCurrent,
     eglSwapInterval, init_egl_display, wl_egl_window_destroy,
 };
 use crate::render::state::{GlContext, RenderState};
 use crate::timing::Timing;
-use crate::wayland::surfaces::create_surface;
-
-use super::state::{App, Monitor};
 
 pub struct BootstrapOutput {
     pub app: App,
@@ -37,7 +33,7 @@ pub struct BootstrapOutput {
     pub error_ping_source: calloop::ping::PingSource,
 }
 
-pub fn bootstrap(args: &mut Args) -> Result<BootstrapOutput> {
+pub fn bootstrap(args: &Args) -> Result<BootstrapOutput> {
     if args.use_hwdec {
         bootstrap_drm(args)
     } else {
@@ -110,13 +106,7 @@ pub fn bootstrap_gl_egl(args: &Args) -> Result<BootstrapOutput> {
 
     initialize_gl_egl(&mut app)?;
 
-    let (ping_source, error_ping_source) = start_decoder(
-        &mut app.decoder,
-        &mut app.timing,
-        &video_path,
-        &app.frame_queue,
-        None,
-    )?;
+    let (ping_source, error_ping_source) = start_decoder(&mut app, &video_path, None)?;
 
     Ok(BootstrapOutput {
         app,
@@ -214,13 +204,7 @@ pub fn bootstrap_drm(args: &Args) -> Result<BootstrapOutput> {
         None
     };
 
-    let (ping_source, error_ping_source) = start_decoder(
-        &mut app.decoder,
-        &mut app.timing,
-        &video_path,
-        &app.frame_queue,
-        render_node,
-    )?;
+    let (ping_source, error_ping_source) = start_decoder(&mut app, &video_path, render_node)?;
 
     Ok(BootstrapOutput {
         app,
@@ -245,26 +229,24 @@ fn canonicalize_video_path(video_path: &str) -> Result<String> {
 }
 
 fn start_decoder(
-    decoder: &mut Decoder,
-    timing: &mut Timing,
+    app: &mut App,
     video_path: &str,
-    frame_queue: &Arc<FrameQueue>,
     render_node: Option<PathBuf>,
 ) -> Result<(PingSource, PingSource)> {
     let (ping, ping_source) = ping::make_ping().context("Failed to create decoder wakeup ping")?;
     let (error_ping, error_ping_source) =
         ping::make_ping().context("Failed to create decoder error ping")?;
 
-    decoder
+    app.decoder
         .start(
             video_path,
-            frame_queue.clone(),
+            app.frame_queue.clone(),
             ping,
             error_ping,
             render_node.as_deref(),
         )
         .context("Failed to start decoder")?;
-    timing.configure(decoder.time_base);
+    app.timing.configure(app.decoder.time_base);
 
     Ok((ping_source, error_ping_source))
 }
@@ -382,7 +364,14 @@ fn create_layer_shell_surfaces(app: &mut App, qh: &QueueHandle<App>) {
             monitor.physical_height = 1080;
         }
 
-        create_surface(compositor, layer_shell, viewporter, qh, monitor, i);
+        crate::wayland::surfaces::create_surface(
+            compositor,
+            layer_shell,
+            viewporter,
+            qh,
+            monitor,
+            i,
+        );
     }
 }
 

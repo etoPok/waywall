@@ -221,7 +221,7 @@ fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
     }
 
     let (buf, buf_w, buf_h) = {
-        let wbs = match app.acquire_or_create_buffer(unsafe { &mut *frame }) {
+        let wbs = match app.get_or_create_wl_buffer(unsafe { &mut *frame }) {
             Ok(Some(wbs)) => wbs,
             Ok(None) => {
                 app.frame_queue.commit_read();
