@@ -81,7 +81,10 @@ impl VaapiConverter {
             }
             let mut scale_ctx: *mut AVFilterContext = ptr::null_mut();
 
-            let scale_args = CString::new(format!("w={}:h={}:format=bgra", width, height))?;
+            let scale_args = CString::new(format!(
+                "w={}:h={}:format=bgra:out_range=full",
+                width, height
+            ))?;
 
             let ret = avfilter_graph_create_filter(
                 &mut scale_ctx,
