@@ -1,12 +1,11 @@
 use tracing::debug;
 use wayland_client::Proxy;
-use wayland_client::{protocol::wl_compositor::WlCompositor, QueueHandle};
+use wayland_client::{QueueHandle, protocol::wl_compositor::WlCompositor};
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::ZwlrLayerShellV1;
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 use crate::app::state::{App, Monitor};
-use crate::wayland::raw::proxy_to_raw_ptr;
 
 pub fn create_surface(
     compositor: &WlCompositor,
@@ -39,11 +38,7 @@ pub fn create_surface(
     layer_surface.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
     layer_surface.set_exclusive_zone(-1);
 
-    // Get the native C pointer to wl_surface*.
-    //
-    // wayland_backend::ObjectId::as_ptr() returns the native *mut wl_proxy
-    // through the public and stable sys backend API.
-    monitor.wl_surface_ptr = proxy_to_raw_ptr(&surface);
+    monitor.wl_surface_ptr = surface.id().as_ptr() as *mut std::ffi::c_void;
 
     if let Some(vp) = &viewporter {
         let viewport = vp.get_viewport(&surface, qh, ());
