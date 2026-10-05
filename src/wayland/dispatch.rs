@@ -165,10 +165,13 @@ impl Dispatch<ZwpLinuxBufferParamsV1, ()> for App {
     ) {
         match event {
             zwp_linux_buffer_params_v1::Event::Created { buffer } => {
-                debug!("DMA-BUF buffer created successfully ID: {:?}", buffer.id());
+                debug!(
+                    "zwp_linux_buffer_params_v1 created successfully: {:?}",
+                    buffer.id()
+                );
             }
             zwp_linux_buffer_params_v1::Event::Failed => {
-                error!("The compositor REJECTED the DMA-BUF buffer creation");
+                error!("zwp_linux_buffer_params_v1 failed to create");
             }
             _ => {}
         }
