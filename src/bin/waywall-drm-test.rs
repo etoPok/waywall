@@ -63,7 +63,7 @@ fn main() -> anyhow::Result<()> {
     event_loop
         .handle()
         .insert_source(parce, move |_, _, app| {
-            if app.committed_frames + app.dropped_frames >= frames {
+            if app.committed_frames + app.dropped_frames > frames {
                 return calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(1));
             }
 
