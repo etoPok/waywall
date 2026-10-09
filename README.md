@@ -46,21 +46,19 @@ cargo build --release
 # Basic
 waywall /path/to/video.mp4
 
-# Specify multiple outputs
-waywall -o eDP-1,DP-3 /path/to/video.mp4
-
-# Hardware-accelerated decoding via VA-API
-waywall --hwdec vaapi -o eDP-1 /path/to/video.mp4
+# Specify multiple outputs, hardware-accelerated decoding via VA-API, and target fps
+waywall --fps 30 --hwdec vaapi -o eDP-1,DP-3 /path/to/video.mp4
 ```
 
 ### CLI Flags
 
 | Flag | Values | Default | Notes |
 |------|--------|---------|-------|
-| `-h, --help` | | | Shows help |
-| `-o, --output` | output name | all outputs | For example, in Hyprland you can se the name of your outputs with `hyprctl monitors` |
-| `--hwdec` | `no` or `vaapi` | `no` | Enables hardware-accelerated decoding. `vaapi` uses the DRM pipeline resolving the compositor render node via VA-API; `no` uses software decoding with EGL/GL rendering. Requires a VA-API capable FFmpeg/driver and `/dev/dri/renderD*` access |
-| `<video_path>` | file path | required | mp4 video path |
+| `-h, --help`      |                       |                       | Shows help |
+| `-o, --output`    | output name           | all outputs           | For example, in Hyprland, you can see the name of your outputs with `hyprctl monitors` |
+| `--fps`           | target fps            | source frame rate     | Integer between FPS_MIN-FPS_MAX. `target_fps` can have a maximum value equal to the source frame rate |
+| `--hwdec`         | `no` or `vaapi`       | `no`                  | Enables hardware-accelerated decoding. `vaapi` uses the DRM pipeline resolving the compositor render node via VA-API; `no` uses software decoding with EGL/GL rendering. Requires a VA-API capable FFmpeg/driver and `/dev/dri/renderD*` access |
+| `<video_path>`    | file path             | required              | mp4 video path |
 
 ## Recommended video formats
 
