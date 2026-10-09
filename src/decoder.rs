@@ -130,6 +130,7 @@ pub struct Decoder {
     pub running: Arc<AtomicBool>,
     pub frame_queue: Option<Arc<FrameQueue>>,
     pub time_base: ffmpeg_sys_next::AVRational,
+    pub avg_frame_rate: ffmpeg_sys_next::AVRational,
     codec_ctx: *mut AVCodecContext,
     fmt_ctx: *mut AVFormatContext,
 }
@@ -147,6 +148,7 @@ impl Decoder {
             running: Arc::new(AtomicBool::new(false)),
             frame_queue: None,
             time_base: ffmpeg_sys_next::AVRational { num: 0, den: 0 },
+            avg_frame_rate: ffmpeg_sys_next::AVRational { num: 0, den: 0 },
             codec_ctx: ptr::null_mut(),
             fmt_ctx: ptr::null_mut(),
         }
@@ -184,13 +186,8 @@ impl Decoder {
             }
         }
 
-        let (video_stream_idx, codec_params, time_base_num, time_base_den, width, height) =
-            set_video_stream(fmt_ctx)?;
-
-        if video_stream_idx < 0 {
-            unsafe { avformat_close_input(&mut fmt_ctx) };
-            anyhow::bail!("No video stream found");
-        }
+        let (video_stream_idx, codec_params, time_base, avg_frame_rate) =
+            find_video_stream(fmt_ctx)?;
 
         // Find decoder
         let codec_id = unsafe { (*codec_params).codec_id };
@@ -272,17 +269,19 @@ impl Decoder {
 
         self.thread = Some(thread);
         self.running = running;
-        self.time_base = ffmpeg_sys_next::AVRational {
-            num: time_base_num,
-            den: time_base_den,
-        };
+        self.time_base = time_base;
+        self.avg_frame_rate = avg_frame_rate;
         self.codec_ctx = codec_ctx;
         self.fmt_ctx = fmt_ctx;
 
         let pixel_format = unsafe { (*codec_ctx).pix_fmt };
         debug!(
-            "Decoder: {}x{}, time_base={}/{}, pix_fmt={:?}",
-            width, height, self.time_base.num, self.time_base.den, pixel_format as i32
+            "Decoder: codec_ctx_pix_fmt={:?}, time_base={}/{}, avg_frame_rate={}/{}",
+            pixel_format as i32,
+            self.time_base.num,
+            self.time_base.den,
+            self.avg_frame_rate.num,
+            self.avg_frame_rate.den,
         );
 
         Ok(())
@@ -344,9 +343,14 @@ impl Drop for Decoder {
 unsafe impl Send for Decoder {}
 unsafe impl Sync for Decoder {}
 
-fn set_video_stream(
+fn find_video_stream(
     fmt_ctx: *mut AVFormatContext,
-) -> Result<(i32, *mut AVCodecParameters, i32, i32, i32, i32)> {
+) -> Result<(
+    i32,
+    *mut AVCodecParameters,
+    ffmpeg_sys_next::AVRational,
+    ffmpeg_sys_next::AVRational,
+)> {
     unsafe {
         let nb_steams = (*fmt_ctx).nb_streams;
         for i in 0..nb_steams {
@@ -356,16 +360,14 @@ fn set_video_stream(
                 return Ok((
                     i as i32,
                     stream_ref.codecpar,
-                    stream_ref.time_base.num,
-                    stream_ref.time_base.den,
-                    (*stream_ref.codecpar).width,
-                    (*stream_ref.codecpar).height,
+                    stream_ref.time_base,
+                    stream_ref.avg_frame_rate,
                 ));
             }
         }
     }
 
-    Ok((-1, ptr::null_mut(), 0, 0, 0, 0))
+    anyhow::bail!("No video stream found");
 }
 
 fn init_hw_device(codec_ctx: *mut AVCodecContext, drm_node: &Path) -> Result<()> {
