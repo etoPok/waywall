@@ -107,6 +107,7 @@ pub fn bootstrap_gl_egl(args: &Args) -> Result<BootstrapOutput> {
     initialize_gl_egl(&mut app)?;
 
     let (ping_source, error_ping_source) = start_decoder(&mut app, &video_path, None)?;
+    configure_timing(&app.decoder, &mut app.timing, args.fps);
 
     Ok(BootstrapOutput {
         app,
@@ -205,6 +206,7 @@ pub fn bootstrap_drm(args: &Args) -> Result<BootstrapOutput> {
     };
 
     let (ping_source, error_ping_source) = start_decoder(&mut app, &video_path, render_node)?;
+    configure_timing(&app.decoder, &mut app.timing, args.fps);
 
     Ok(BootstrapOutput {
         app,
@@ -213,6 +215,46 @@ pub fn bootstrap_drm(args: &Args) -> Result<BootstrapOutput> {
         ping_source,
         error_ping_source,
     })
+}
+
+fn configure_timing(decoder: &Decoder, timing: &mut Timing, fps: Option<u64>) {
+    let avg_frame_rate = if decoder.avg_frame_rate.num > 0 && decoder.avg_frame_rate.den > 0 {
+        decoder.avg_frame_rate.num as f64 / decoder.avg_frame_rate.den as f64
+    } else {
+        0.0
+    };
+
+    if let Some(f) = fps {
+        let target_fps = f as f64;
+        if avg_frame_rate <= 0.0 {
+            timing.configure(decoder.time_base, 1.0);
+            warn!(
+                "Timing: invalid source frame rate ({:.2}). Playback capped at source frame rate.",
+                avg_frame_rate
+            );
+            return;
+        }
+
+        if target_fps > avg_frame_rate {
+            timing.configure(decoder.time_base, 1.0);
+            warn!(
+                "Timing: required --fps {} exceds the source frame rate. Playback capped at source frame rate ({:.2}).",
+                f, avg_frame_rate
+            );
+            return;
+        }
+
+        let time_scale = target_fps / avg_frame_rate;
+        timing.configure(decoder.time_base, time_scale);
+        tracing::info!(
+            "Timing: fps={}, source_fps={:.2}, time_scale={:.2}",
+            f,
+            avg_frame_rate,
+            time_scale
+        );
+    } else {
+        timing.configure(decoder.time_base, 1.0);
+    }
 }
 
 fn canonicalize_video_path(video_path: &str) -> Result<String> {
@@ -246,7 +288,6 @@ fn start_decoder(
             render_node.as_deref(),
         )
         .context("Failed to start decoder")?;
-    app.timing.configure(app.decoder.time_base);
 
     Ok((ping_source, error_ping_source))
 }

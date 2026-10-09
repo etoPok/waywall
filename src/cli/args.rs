@@ -1,10 +1,14 @@
 use std::env;
 
+const FPS_MAX: u64 = 90;
+const FPS_MIN: u64 = 15;
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Args {
     pub video_path: String,
     pub outputs: Vec<String>,
     pub use_hwdec: bool,
+    pub fps: Option<u64>,
 }
 
 fn print_usage(program: &str) {
@@ -12,6 +16,9 @@ fn print_usage(program: &str) {
     eprintln!();
     eprintln!("Options:");
     eprintln!("  -o, --output <name>        Output connector(s) to use (e.g. eDP-1, DP-3)");
+    eprintln!(
+        "  --fps <{FPS_MIN}-{FPS_MAX}>              Define the target frame rate for video playback"
+    );
     eprintln!("  --hwdec <no|vaapi>         Enable hardware-accelerated decoding (VA-API)");
     eprintln!("  -h, --help                 Show this help");
     eprintln!();
@@ -32,6 +39,7 @@ where
     let mut video_path: Option<String> = None;
     let mut outputs: Vec<String> = Vec::new();
     let mut use_hwdec: bool = false;
+    let mut fps: Option<u64> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -66,6 +74,30 @@ where
                     }
                 }
             }
+            "--fps" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(format!(
+                        "error: --fps requires a value (expected integer {FPS_MIN}-{FPS_MAX})",
+                    ));
+                }
+                match args[i].parse::<u64>() {
+                    Ok(n) => {
+                        if !(FPS_MIN..=FPS_MAX).contains(&n) {
+                            return Err(format!(
+                                "error: --fps must be between {FPS_MIN} and {FPS_MAX} (got '{n}')"
+                            ));
+                        }
+                        fps.replace(n);
+                    }
+                    Err(_) => {
+                        return Err(format!(
+                            "error: invalid --fps '{}' (expected integer {FPS_MIN}-{FPS_MAX})",
+                            args[i]
+                        ));
+                    }
+                }
+            }
             _ => {
                 if video_path.is_none() {
                     video_path = Some(args[i].clone());
@@ -86,6 +118,7 @@ where
         video_path,
         outputs,
         use_hwdec,
+        fps,
     })
 }
 
@@ -119,6 +152,7 @@ mod tests {
         assert_eq!(a.video_path, "video.mp4");
         assert!(a.outputs.is_empty());
         assert!(!a.use_hwdec);
+        assert_eq!(a.fps, None);
     }
 
     #[test]
@@ -186,5 +220,89 @@ mod tests {
         assert_eq!(e, "help");
         let e2 = parse_from(args(&["waywall", "-h"])).unwrap_err();
         assert_eq!(e2, "help");
+    }
+
+    #[test]
+    fn parse_fps_valid_boundaries() {
+        let min = FPS_MIN.to_string();
+        let a = parse_from(args(&["waywall", "--fps", &min, "v.mp4"])).unwrap();
+        assert_eq!(a.fps, Some(FPS_MIN));
+
+        let b = parse_from(args(&["waywall", "--fps", "30", "v.mp4"])).unwrap();
+        assert_eq!(b.fps, Some(30));
+
+        let max = FPS_MAX.to_string();
+        let c = parse_from(args(&["waywall", "--fps", &max, "v.mp4"])).unwrap();
+        assert_eq!(c.fps, Some(FPS_MAX));
+    }
+
+    #[test]
+    fn parse_fps_combined_with_flags() {
+        let a = parse_from(args(&[
+            "waywall", "--fps", "60", "-o", "eDP-1", "--hwdec", "vaapi", "v.mp4",
+        ]))
+        .unwrap();
+        assert_eq!(a.fps, Some(60));
+        assert_eq!(a.outputs, vec!["eDP-1"]);
+        assert!(a.use_hwdec);
+    }
+
+    #[test]
+    fn parse_fps_below_range_errors() {
+        let low = (FPS_MIN - 1).to_string();
+        let e = parse_from(args(&["waywall", "--fps", &low, "v.mp4"])).unwrap_err();
+        assert!(e.contains(&format!("must be between {FPS_MIN} and {FPS_MAX}")));
+        assert!(e.contains(&format!("(got '{low}')")));
+
+        let e2 = parse_from(args(&["waywall", "--fps", "0", "v.mp4"])).unwrap_err();
+        assert!(e2.contains(&format!("must be between {FPS_MIN} and {FPS_MAX}")));
+        assert!(e2.contains("(got '0')"));
+    }
+
+    #[test]
+    fn parse_fps_above_range_errors() {
+        let high = (FPS_MAX + 1).to_string();
+        let e = parse_from(args(&["waywall", "--fps", &high, "v.mp4"])).unwrap_err();
+        assert!(e.contains(&format!("must be between {FPS_MIN} and {FPS_MAX}")));
+        assert!(e.contains(&format!("(got '{high}')")));
+    }
+
+    #[test]
+    fn parse_fps_non_numeric_errors() {
+        let e = parse_from(args(&["waywall", "--fps", "abc", "v.mp4"])).unwrap_err();
+        assert!(e.contains("invalid --fps"));
+        assert!(e.contains(&format!("(expected integer {FPS_MIN}-{FPS_MAX})")));
+    }
+
+    #[test]
+    fn parse_fps_negative_errors() {
+        let e = parse_from(args(&["waywall", "--fps", "-5", "v.mp4"])).unwrap_err();
+        assert!(e.contains("invalid --fps"));
+    }
+
+    #[test]
+    fn parse_fps_float_errors() {
+        let e = parse_from(args(&["waywall", "--fps", "30.5", "v.mp4"])).unwrap_err();
+        assert!(e.contains("invalid --fps"));
+    }
+
+    #[test]
+    fn parse_fps_overflow_errors() {
+        let e =
+            parse_from(args(&["waywall", "--fps", "99999999999999999999", "v.mp4"])).unwrap_err();
+        assert!(e.contains("invalid --fps"));
+    }
+
+    #[test]
+    fn parse_fps_missing_value_errors() {
+        let e = parse_from(args(&["waywall", "--fps"])).unwrap_err();
+        assert!(e.contains("requires a value"));
+        assert!(e.contains(&format!("(expected integer {FPS_MIN}-{FPS_MAX})")));
+    }
+
+    #[test]
+    fn parse_fps_last_wins() {
+        let a = parse_from(args(&["waywall", "--fps", "30", "--fps", "60", "v.mp4"])).unwrap();
+        assert_eq!(a.fps, Some(60));
     }
 }

@@ -5,6 +5,7 @@ pub struct Timing {
     start_time: Instant,
     time_base: ffmpeg_sys_next::AVRational,
     drop_threshold: i64,
+    time_scale: f64,
     last_pts: i64,
     started: bool,
 }
@@ -21,16 +22,18 @@ impl Timing {
             start_time: Instant::now(),
             time_base: ffmpeg_sys_next::AVRational { num: 1, den: 1 },
             drop_threshold: 50_000, // 50 ms
+            time_scale: 0.0,
             last_pts: 0,
             started: false,
         }
     }
 
-    pub fn configure(&mut self, time_base: ffmpeg_sys_next::AVRational) {
+    pub fn configure(&mut self, time_base: ffmpeg_sys_next::AVRational, time_scale: f64) {
         if self.started {
             return;
         }
 
+        self.time_scale = time_scale;
         self.time_base = time_base;
     }
 
@@ -69,7 +72,7 @@ impl Timing {
             )
         };
 
-        let elapsed_us = self.start_time.elapsed().as_micros() as i64;
+        let elapsed_us = (self.start_time.elapsed().as_micros() as f64 * self.time_scale) as i64;
         let delay_us = target_time_us - elapsed_us;
 
         if delay_us < -self.drop_threshold {
