@@ -3,31 +3,24 @@ use std::ptr;
 use std::sync::Arc;
 use std::time::Instant;
 
+use anyhow::Context;
 use calloop::LoopSignal;
 use ffmpeg_sys_next::{AVFrame, av_frame_free, av_frame_unref};
 use wayland_client::protocol::wl_buffer::WlBuffer;
-use wayland_client::protocol::{
-    wl_compositor::WlCompositor, wl_output::WlOutput, wl_surface::WlSurface,
-};
-use wayland_client::{Connection, QueueHandle};
+use wayland_client::protocol::{wl_output::WlOutput, wl_surface::WlSurface};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_buffer_params_v1::{
     Flags, ZwpLinuxBufferParamsV1,
 };
-use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
-use wayland_protocols::wp::viewporter::client::{
-    wp_viewport::WpViewport, wp_viewporter::WpViewporter,
-};
-use wayland_protocols_wlr::layer_shell::v1::client::{
-    zwlr_layer_shell_v1::ZwlrLayerShellV1, zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
-};
+use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
+use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 
 use crate::decoder::Decoder;
 use crate::drm_frame::DrmFrame;
 use crate::frame_queue::FrameQueue;
-use crate::render::egl::eglTerminate;
 use crate::render::state::{GlContext, RenderState};
 use crate::timing::Timing;
 use crate::vaapi_converter::VaapiConverter;
+use crate::wayland::connection::WlConnection;
 
 pub struct Monitor {
     pub name: Option<String>,
@@ -124,16 +117,8 @@ impl Drop for WlBufferState {
 }
 
 pub struct App {
-    pub conn: Connection,
-    pub qh: QueueHandle<App>,
-    pub compositor: WlCompositor,
-    pub layer_shell: ZwlrLayerShellV1,
-    pub viewporter: Option<WpViewporter>,
-    pub wl_display: *mut c_void,
+    pub wl_conn: WlConnection,
 
-    // DMA-BUF
-    pub dmabuf: Option<ZwpLinuxDmabufV1>,
-    pub dmabuf_main_device: Option<Vec<u8>>,
     pub wl_buffer_states: [Option<WlBufferState>; 3],
     pub converter: Option<VaapiConverter>,
 
@@ -162,28 +147,11 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(
-        conn: Connection,
-        qh: QueueHandle<App>,
-        compositor: WlCompositor,
-        layer_shell: ZwlrLayerShellV1,
-        wl_display: *mut c_void,
-        viewporter: Option<WpViewporter>,
-        dmabuf: Option<ZwpLinuxDmabufV1>,
-        decoder: Decoder,
-        timing: Timing,
-    ) -> Self {
+    pub fn new(wl_conn: WlConnection, decoder: Decoder, timing: Timing) -> Self {
         Self {
-            conn,
-            qh,
-            compositor,
-            layer_shell,
-            viewporter,
-            wl_display,
-            dmabuf,
+            wl_conn,
             decoder,
             timing,
-            dmabuf_main_device: None,
             wl_buffer_states: std::array::from_fn(|_| None),
             converter: None,
             monitors: Vec::new(),
@@ -246,7 +214,8 @@ impl App {
                 .map(wbs.bgra_frame, &mut wbs.drm_frame)
         }?;
 
-        let params = self.dmabuf.as_ref().unwrap().create_params(&self.qh, ());
+        let dmabuf = self.wl_conn.dmabuf.as_ref().unwrap();
+        let params = dmabuf.create_params(&self.wl_conn.qh, ());
 
         let mut plane_idx = 0u32;
         for layer in wbs.drm_frame_wrapper.layers.iter() {
@@ -269,7 +238,7 @@ impl App {
             wbs.drm_frame_wrapper.height,
             wbs.drm_frame_wrapper.format,
             Flags::empty(),
-            &self.qh,
+            &self.wl_conn.qh,
             (),
         );
 
@@ -278,6 +247,82 @@ impl App {
         wbs.in_use = true;
 
         Ok(wl_buffer_state.as_ref())
+    }
+
+    pub fn wait_dispatch_events<F>(
+        &mut self,
+        queue: &mut wayland_client::EventQueue<crate::app::state::App>,
+        timeout: std::time::Duration,
+        mut is_finished: F,
+    ) -> anyhow::Result<()>
+    where
+        F: FnMut(&crate::app::state::App) -> bool,
+    {
+        let deadline = std::time::Instant::now() + timeout;
+
+        queue
+            .flush()
+            .context("Error flushing pending outgoing events")?;
+
+        use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+
+        while !is_finished(self) {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+
+            let read_guard = match queue.prepare_read() {
+                Some(guard) => guard,
+                None => {
+                    queue
+                        .dispatch_pending(self)
+                        .context("Error in dispatch_pending")?;
+                    continue;
+                }
+            };
+
+            // connection_fd() returns a BorrowedFd, which implements AsFd for nix.
+            let fd = read_guard.connection_fd();
+            let mut poll_fd = PollFd::new(fd, PollFlags::POLLIN);
+
+            match poll(
+                std::slice::from_mut(&mut poll_fd),
+                PollTimeout::try_from(remaining).unwrap_or(PollTimeout::MAX),
+            ) {
+                std::result::Result::Ok(0) => {
+                    continue;
+                }
+                std::result::Result::Ok(_) => {
+                    // Events are ready. Verify that the POLLIN flag is set (for safety).
+                    let revents = poll_fd.revents().unwrap_or_else(PollFlags::empty);
+                    if revents.contains(PollFlags::POLLIN) {
+                        match read_guard.read() {
+                            std::result::Result::Ok(_) => {}
+                            Err(wayland_backend::client::WaylandError::Io(e))
+                                if e.kind() == std::io::ErrorKind::WouldBlock =>
+                            {
+                                // "Spurious wakeup": the kernel woke the thread but there is no real data yet. Safe to ignore.
+                            }
+                            Err(e) => anyhow::bail!("Error reading Wayland events: {}", e),
+                        }
+                    }
+                }
+                Err(nix::errno::Errno::EINTR) => {
+                    // possible interrupt due to a system signal
+                    continue;
+                }
+                Err(e) => {
+                    anyhow::bail!("Error in Wayland poll: {}", e);
+                }
+            }
+
+            queue
+                .dispatch_pending(self)
+                .context("Error in dispatch_pending after reading")?;
+        }
+
+        Ok(())
     }
 }
 
@@ -289,9 +334,9 @@ impl Drop for App {
             drop(gl);
         }
 
-        if !self.wl_display.is_null() {
+        if !self.wl_conn.wl_display().is_null() {
             unsafe {
-                eglTerminate(self.wl_display);
+                crate::render::egl::eglTerminate(self.wl_conn.wl_display());
             }
         }
     }

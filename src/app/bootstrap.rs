@@ -1,18 +1,11 @@
 use std::ffi::CString;
 use std::os::raw::c_void;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 use anyhow::{Context, Ok, Result, bail};
 use calloop::ping::{self, PingSource};
-use nix::errno::Errno;
-use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use tracing::{debug, warn};
-use wayland_backend::client::WaylandError;
-use wayland_client::protocol::wl_output::WlOutput;
-use wayland_client::{Connection, EventQueue, QueueHandle, globals::registry_queue_init};
-use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1;
-use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
+use wayland_client::EventQueue;
 
 use super::state::{App, Monitor};
 use crate::cli::args::Args;
@@ -24,11 +17,11 @@ use crate::render::egl::{
 };
 use crate::render::state::{GlContext, RenderState};
 use crate::timing::Timing;
+use crate::wayland::connection::WlConnection;
 
 pub struct BootstrapOutput {
     pub app: App,
-    pub conn: Connection,
-    pub queue: wayland_client::EventQueue<App>,
+    pub queue: EventQueue<App>,
     pub ping_source: calloop::ping::PingSource,
     pub error_ping_source: calloop::ping::PingSource,
 }
@@ -42,63 +35,18 @@ pub fn bootstrap(args: &Args) -> Result<BootstrapOutput> {
 }
 
 pub fn bootstrap_gl_egl(args: &Args) -> Result<BootstrapOutput> {
-    let video_path = canonicalize_video_path(&args.video_path)?;
-
-    let conn = Connection::connect_to_env()
-        .context("Could not connect to Wayland server, is WAYLAND_DISPLAY set?")?;
-
-    let (globals, mut queue) =
-        registry_queue_init::<App>(&conn).context("Error initializing Wayland registry")?;
-    let qh = queue.handle();
-
-    let compositor = globals
-        .bind(&qh, 4..=5, ())
-        .context("Compositor does not support wl_compositor")?;
-
-    let layer_shell = globals
-        .bind(&qh, 1..=4, ())
-        .context("Compositor does not support zwlr_layer_shell_v1")?;
-
-    let viewporter: Option<WpViewporter> = globals.bind(&qh, 1..=1, ()).ok();
-    if viewporter.is_none() {
-        warn!("wl_viewporter not available, fallback to logical size for EGL");
-    }
-
-    let mut app = App::new(
-        conn.clone(),
-        qh.clone(),
-        compositor,
-        layer_shell,
-        conn.backend().display_ptr() as *mut c_void,
-        viewporter,
-        None,
-        Decoder::new(),
-        Timing::new(),
-    );
-
-    let registry = globals.registry();
-    for global in globals.contents().clone_list() {
-        if global.interface == "wl_output" {
-            let output =
-                registry.bind::<WlOutput, _, _>(global.name, global.version.min(4), &qh, ());
-            app.monitors.push(Monitor::new(output));
-        }
-    }
+    let (mut app, mut queue) = common_connection()?;
 
     queue
         .roundtrip(&mut app)
         .context("Error in initial roundtrip")?;
 
     filter_outputs_by_name(&mut app.monitors, &args.outputs)?;
-    create_layer_shell_surfaces(&mut app, &qh);
+    create_layer_shell_surfaces(&mut app);
 
-    wait_for_wayland_events_state(
-        &conn,
-        &mut queue,
-        &mut app,
-        Duration::from_secs(2),
-        |state| state.configured,
-    )?;
+    app.wait_dispatch_events(&mut queue, std::time::Duration::from_secs(2), |_app| {
+        _app.configured
+    })?;
 
     if !app.configured {
         bail!("Compositor did not send zwl_layer_surface_v1.configure within waiting time.");
@@ -106,12 +54,12 @@ pub fn bootstrap_gl_egl(args: &Args) -> Result<BootstrapOutput> {
 
     initialize_gl_egl(&mut app)?;
 
+    let video_path = canonicalize_video_path(&args.video_path)?;
     let (ping_source, error_ping_source) = start_decoder(&mut app, &video_path, None)?;
     configure_timing(&app.decoder, &mut app.timing, args.fps);
 
     Ok(BootstrapOutput {
         app,
-        conn,
         queue,
         ping_source,
         error_ping_source,
@@ -119,75 +67,27 @@ pub fn bootstrap_gl_egl(args: &Args) -> Result<BootstrapOutput> {
 }
 
 pub fn bootstrap_drm(args: &Args) -> Result<BootstrapOutput> {
-    let video_path = canonicalize_video_path(&args.video_path)?;
-
-    let conn = Connection::connect_to_env()
-        .context("Could not connect to Wayland server, is WAYLAND_DISPLAY set?")?;
-
-    let (globals, mut queue) =
-        registry_queue_init::<App>(&conn).context("Error initializing Wayland registry")?;
-    let qh = queue.handle();
-
-    let compositor = globals
-        .bind(&qh, 4..=5, ())
-        .context("Compositor does not support wl_compositor")?;
-
-    let layer_shell = globals
-        .bind(&qh, 1..=4, ())
-        .context("Compositor does not support zwlr_layer_shell_v1")?;
-
-    let viewporter: Option<WpViewporter> = globals.bind(&qh, 1..=1, ()).ok();
-    if viewporter.is_none() {
-        warn!("wl_viewporter not available, fallback to logical size for EGL");
-    }
-
-    let dmabuf: ZwpLinuxDmabufV1 = globals.bind(&qh, 4..=4, ()).context(
-        "Compositor does not support zwp_linux_dmabuf_v1 v4 (required for drm pipeline)",
-    )?;
-    let feedback = dmabuf.get_default_feedback(&qh, ());
-
-    let mut app = App::new(
-        conn.clone(),
-        qh.clone(),
-        compositor,
-        layer_shell,
-        std::ptr::null_mut::<c_void>(),
-        viewporter,
-        Some(dmabuf),
-        Decoder::new(),
-        Timing::new(),
-    );
-
-    let registry = globals.registry();
-    for global in globals.contents().clone_list() {
-        if global.interface == "wl_output" {
-            let output =
-                registry.bind::<WlOutput, _, _>(global.name, global.version.min(4), &qh, ());
-            app.monitors.push(Monitor::new(output));
-        }
-    }
+    let (mut app, mut queue) = common_connection()?;
+    app.wl_conn.bind_zwp_linux_dmabuf_v1()?;
+    let feedback = app.wl_conn.get_default_feedback()?;
 
     queue
         .roundtrip(&mut app)
         .context("Error in initial roundtrip")?;
 
     filter_outputs_by_name(&mut app.monitors, &args.outputs)?;
-    create_layer_shell_surfaces(&mut app, &qh);
+    create_layer_shell_surfaces(&mut app);
 
-    wait_for_wayland_events_state(
-        &conn,
-        &mut queue,
-        &mut app,
-        Duration::from_secs(2),
-        |state| state.configured && state.dmabuf_main_device.is_some(),
-    )?;
+    app.wait_dispatch_events(&mut queue, std::time::Duration::from_secs(2), |_app| {
+        _app.configured && _app.wl_conn.main_device.is_some()
+    })?;
 
     if !app.configured {
         feedback.destroy();
         bail!("Compositor did not send zwl_layer_surface_v1.configure within waiting time.");
     }
 
-    if app.dmabuf_main_device.is_none() {
+    if app.wl_conn.main_device.is_none() {
         feedback.destroy();
         bail!(
             "Compositor did not send zwp_linux_dmabuf_feedback_v1.main_device within waiting time."
@@ -197,7 +97,7 @@ pub fn bootstrap_drm(args: &Args) -> Result<BootstrapOutput> {
     feedback.destroy();
 
     let render_node = if args.use_hwdec {
-        let rn = render_node_from_main_device(app.dmabuf_main_device.as_ref().unwrap())
+        let rn = render_node_from_main_device(app.wl_conn.main_device.as_ref().unwrap())
             .context("VAAPI requested but no DRM render node was resolved from the compositor")?;
         debug!("Render node: {}", rn.display());
         Some(rn)
@@ -205,16 +105,34 @@ pub fn bootstrap_drm(args: &Args) -> Result<BootstrapOutput> {
         None
     };
 
+    let video_path = canonicalize_video_path(&args.video_path)?;
     let (ping_source, error_ping_source) = start_decoder(&mut app, &video_path, render_node)?;
     configure_timing(&app.decoder, &mut app.timing, args.fps);
 
     Ok(BootstrapOutput {
         app,
-        conn,
         queue,
         ping_source,
         error_ping_source,
     })
+}
+
+fn common_connection() -> Result<(App, EventQueue<App>)> {
+    let (conn, globals, queue) = WlConnection::connect()?;
+    let (compositor, layer_shell) =
+        WlConnection::bind_required_protocol_extensions(&globals, &queue)?;
+    let mut wl_conn = WlConnection::new(conn, globals, queue.handle(), compositor, layer_shell);
+    wl_conn.bind_wp_viewporter()?;
+
+    let mut app = App::new(wl_conn, Decoder::new(), Timing::new());
+    app.monitors.extend(
+        app.wl_conn
+            .bind_all_available_wl_outputs()
+            .into_iter()
+            .map(Monitor::new),
+    );
+
+    Ok((app, queue))
 }
 
 fn configure_timing(decoder: &Decoder, timing: &mut Timing, fps: Option<u64>) {
@@ -293,7 +211,8 @@ fn start_decoder(
 }
 
 fn initialize_gl_egl(app: &mut App) -> Result<(), anyhow::Error> {
-    let (egl_display, egl_config) = unsafe { init_egl_display(app.wl_display)? };
+    let wl_display = app.wl_conn.wl_display();
+    let (egl_display, egl_config) = unsafe { init_egl_display(wl_display)? };
     let mut egl_ctx = std::ptr::null_mut::<c_void>();
     let mut egl_make_current = true;
 
@@ -390,15 +309,14 @@ fn filter_outputs_by_name(monitors: &mut Vec<Monitor>, requested_outputs: &[Stri
     Ok(())
 }
 
-fn create_layer_shell_surfaces(app: &mut App, qh: &QueueHandle<App>) {
-    let (compositor, layer_shell, viewporter, monitors) = (
-        &app.compositor,
-        &app.layer_shell,
-        app.viewporter.as_ref(),
-        &mut app.monitors,
+fn create_layer_shell_surfaces(app: &mut App) {
+    let (compositor, layer_shell, viewporter) = (
+        &app.wl_conn.compositor,
+        &app.wl_conn.layer_shell,
+        app.wl_conn.viewporter.as_ref(),
     );
 
-    for (i, monitor) in monitors.iter_mut().enumerate() {
+    for (i, monitor) in app.monitors.iter_mut().enumerate() {
         if monitor.physical_width == 0 || monitor.physical_height == 0 {
             warn!("Output dimensions not detected, using 1920x1080 as fallback");
             monitor.physical_width = 1920;
@@ -409,82 +327,9 @@ fn create_layer_shell_surfaces(app: &mut App, qh: &QueueHandle<App>) {
             compositor,
             layer_shell,
             viewporter,
-            qh,
+            &app.wl_conn.qh,
             monitor,
             i,
         );
     }
-}
-
-pub fn wait_for_wayland_events_state<State, F>(
-    _conn: &Connection,
-    queue: &mut EventQueue<State>,
-    state: &mut State,
-    timeout: Duration,
-    mut is_finished: F,
-) -> anyhow::Result<()>
-where
-    F: FnMut(&State) -> bool,
-{
-    let deadline = Instant::now() + timeout;
-
-    queue
-        .flush()
-        .context("Error flushing pending outgoing events")?;
-
-    while !is_finished(state) {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-
-        let read_guard = match queue.prepare_read() {
-            Some(guard) => guard,
-            None => {
-                queue
-                    .dispatch_pending(state)
-                    .context("Error in dispatch_pending")?;
-                continue;
-            }
-        };
-
-        // connection_fd() returns a BorrowedFd, which implements AsFd for nix.
-        let fd = read_guard.connection_fd();
-        let mut poll_fd = PollFd::new(fd, PollFlags::POLLIN);
-
-        match poll(
-            std::slice::from_mut(&mut poll_fd),
-            PollTimeout::try_from(remaining).unwrap_or(PollTimeout::MAX),
-        ) {
-            std::result::Result::Ok(0) => {
-                continue;
-            }
-            std::result::Result::Ok(_) => {
-                // Events are ready. Verify that the POLLIN flag is set (for safety).
-                let revents = poll_fd.revents().unwrap_or_else(PollFlags::empty);
-                if revents.contains(PollFlags::POLLIN) {
-                    match read_guard.read() {
-                        std::result::Result::Ok(_) => {}
-                        Err(WaylandError::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            // "Spurious wakeup": the kernel woke the thread but there is no real data yet. Safe to ignore.
-                        }
-                        Err(e) => anyhow::bail!("Error reading Wayland events: {}", e),
-                    }
-                }
-            }
-            Err(Errno::EINTR) => {
-                // possible interrupt due to a system signal
-                continue;
-            }
-            Err(e) => {
-                anyhow::bail!("Error in Wayland poll: {}", e);
-            }
-        }
-
-        queue
-            .dispatch_pending(state)
-            .context("Error in dispatch_pending after reading")?;
-    }
-
-    Ok(())
 }

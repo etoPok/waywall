@@ -1,5 +1,8 @@
 use std::time::{Duration, Instant};
 
+use crate::app::state::App;
+use crate::shader::Shader;
+use crate::vaapi_converter::VaapiConverter;
 use anyhow::Context;
 use calloop::ping::PingSource;
 use calloop::timer::{TimeoutAction, Timer};
@@ -7,25 +10,20 @@ use calloop::{EventLoop, LoopSignal};
 use calloop_wayland_source::WaylandSource;
 use ffmpeg_sys_next::{AVFrame, AVPixelFormat};
 use tracing::{debug, error, info, warn};
-use wayland_client::{Connection, EventQueue};
-
-use crate::app::state::App;
-use crate::shader::Shader;
-use crate::vaapi_converter::VaapiConverter;
+use wayland_client::EventQueue;
 
 pub fn build_common_loop(
-    mut app: App,
-    conn: Connection,
+    app: &mut App,
     queue: EventQueue<App>,
     error_ping_source: PingSource,
-) -> anyhow::Result<(EventLoop<'static, App>, App, LoopSignal)> {
+) -> anyhow::Result<(EventLoop<'static, App>, LoopSignal)> {
     let event_loop: EventLoop<'static, App> =
         EventLoop::try_new().context("Error creating event loop")?;
 
     let loop_signal = event_loop.get_signal();
     app.main_loop_signal = Some(loop_signal.clone());
 
-    WaylandSource::new(conn.clone(), queue)
+    WaylandSource::new(app.wl_conn.conn.clone(), queue)
         .insert(event_loop.handle())
         .map_err(|e| anyhow::anyhow!("Error registering Wayland source in event loop: {}", e))?;
 
@@ -67,12 +65,11 @@ pub fn build_common_loop(
     debug!("Event loop started. Ctrl+C to exit.");
     unsafe { crate::runtime::signals::ctrlc_setup(loop_signal.clone()) };
 
-    Ok((event_loop, app, loop_signal))
+    Ok((event_loop, loop_signal))
 }
 
 fn run_with<F>(
-    app: App,
-    conn: Connection,
+    mut app: App,
     queue: EventQueue<App>,
     _decoded_frame_ping_source: PingSource,
     error_ping_source: PingSource,
@@ -81,13 +78,13 @@ fn run_with<F>(
 where
     F: Fn(&mut App, *mut AVFrame) + 'static,
 {
-    let (mut event_loop, mut app, _) = build_common_loop(app, conn, queue, error_ping_source)?;
+    let (mut event_loop, _) = build_common_loop(&mut app, queue, error_ping_source)?;
 
     let pacer = Timer::immediate();
     event_loop
         .handle()
         .insert_source(pacer, move |_, _, app| pacer_tick(app, &on_frame))
-        .map_err(|e| anyhow::anyhow!("Error registering parcer_tick: {e:#}"))?;
+        .map_err(|e| anyhow::anyhow!("Error registering pacer_tick: {e:#}"))?;
 
     event_loop
         .run(None, &mut app, |_app| {})
@@ -100,7 +97,6 @@ where
 pub fn run(
     args: &crate::cli::args::Args,
     app: App,
-    conn: Connection,
     queue: EventQueue<App>,
     frame_decoded_ping_source: PingSource,
     error_ping_source: PingSource,
@@ -108,7 +104,6 @@ pub fn run(
     if args.use_hwdec {
         run_with(
             app,
-            conn,
             queue,
             frame_decoded_ping_source,
             error_ping_source,
@@ -117,7 +112,6 @@ pub fn run(
     } else {
         run_with(
             app,
-            conn,
             queue,
             frame_decoded_ping_source,
             error_ping_source,

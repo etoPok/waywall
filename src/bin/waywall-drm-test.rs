@@ -24,9 +24,9 @@ fn main() -> anyhow::Result<()> {
         waywall::app::bootstrap::bootstrap_gl_egl(&test_args.prod)?
     };
 
-    let (mut event_loop, mut app, _) = waywall::runtime::event_loop::build_common_loop(
-        bootstrap_output.app,
-        bootstrap_output.conn,
+    let mut app = bootstrap_output.app;
+    let (mut event_loop, _) = waywall::runtime::event_loop::build_common_loop(
+        &mut app,
         bootstrap_output.queue,
         bootstrap_output.error_ping_source,
     )

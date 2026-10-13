@@ -191,7 +191,7 @@ impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for App {
             device,
         } = event
         {
-            state.dmabuf_main_device = Some(device);
+            state.wl_conn.main_device = Some(device);
         }
     }
 }
