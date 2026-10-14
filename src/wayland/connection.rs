@@ -95,13 +95,16 @@ impl WlConnection {
         let registry = self.globals.registry();
         for global in self.globals.contents().clone_list() {
             if global.interface == "wl_output" {
-                let output = registry.bind::<WlOutput, _, _>(
-                    global.name,
-                    global.version.min(4),
-                    &self.qh,
-                    (),
-                );
-                outputs.push(output);
+                if global.version >= 4 {
+                    let output = registry.bind::<WlOutput, _, _>(global.name, 4, &self.qh, ());
+                    outputs.push(output);
+                } else {
+                    tracing::warn!(
+                        "Ignoring wl_output {}: supports version {}, but >= 4 is required",
+                        global.name,
+                        global.version
+                    );
+                }
             }
         }
         outputs
