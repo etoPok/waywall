@@ -16,8 +16,9 @@ pub fn create_surface(
     monitor_index: usize,
 ) {
     let surface = compositor.create_surface(qh, ());
+    let empty_region = compositor.create_region(qh, ());
+    surface.set_input_region(Some(&empty_region));
     let output = monitor.output.as_ref();
-
     let layer_surface = layer_shell.get_layer_surface(
         &surface,
         output,
@@ -47,6 +48,8 @@ pub fn create_surface(
     }
 
     surface.commit();
+
+    empty_region.destroy();
 
     monitor.surface = Some(surface);
     monitor.layer_surface = Some(layer_surface);

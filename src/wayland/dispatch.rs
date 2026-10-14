@@ -6,6 +6,7 @@ use wayland_client::{
         wl_buffer::{self, WlBuffer},
         wl_compositor::WlCompositor,
         wl_output::{self, WlOutput},
+        wl_region::WlRegion,
         wl_registry::WlRegistry,
         wl_seat::WlSeat,
         wl_surface::WlSurface,
@@ -202,6 +203,18 @@ impl Dispatch<ZwpLinuxDmabufV1, ()> for App {
         _proxy: &ZwpLinuxDmabufV1,
         _event: <ZwpLinuxDmabufV1 as Proxy>::Event,
         _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<WlRegion, ()> for App {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WlRegion,
+        _event: <WlRegion as Proxy>::Event,
+        _date: &(),
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
