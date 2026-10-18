@@ -32,17 +32,14 @@ fn main() -> anyhow::Result<()> {
     )
     .context("build_common_loop")?;
 
-    if test_args.prod.use_hwdec {
-        let mut stop_drm_test = false;
-        let drm_test_stop_timer = Timer::from_duration(Duration::from_millis(500));
-        event_loop
-            .handle()
-            .insert_source(drm_test_stop_timer, move |_, _, app| {
+    let mut stop_drm_test = false;
+    event_loop
+        .handle()
+        .insert_source(
+            Timer::from_duration(Duration::from_millis(500)),
+            move |_, _, app| {
                 if app.committed_frames + app.dropped_frames >= frames && !stop_drm_test {
-                    debug!(
-                        "{} frames committed, waiting 2s for WlBuffer Release events...",
-                        frames
-                    );
+                    debug!("Waiting 2s to finish the test...",);
                     stop_drm_test = true;
                     return calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(2));
                 }
@@ -55,15 +52,15 @@ fn main() -> anyhow::Result<()> {
                 }
 
                 calloop::timer::TimeoutAction::ToDuration(Duration::from_millis(500))
-            })
-            .map_err(|e| anyhow::anyhow!("Error registering grace timer: {}", e))?;
-    }
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("Error registering grace timer: {}", e))?;
 
     let parce = Timer::immediate();
     event_loop
         .handle()
         .insert_source(parce, move |_, _, app| {
-            if app.committed_frames + app.dropped_frames > frames {
+            if app.committed_frames + app.dropped_frames >= frames {
                 return calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(1));
             }
 
@@ -92,6 +89,13 @@ fn main() -> anyhow::Result<()> {
             total,
             app.wl_buffer_states.len(),
             in_use,
+            app.committed_frames,
+            app.dropped_frames,
+            (app.dropped_frames + app.committed_frames)
+        );
+    } else {
+        debug!(
+            "committed_frames={}, dropped_frames={}, total_frames={}",
             app.committed_frames,
             app.dropped_frames,
             (app.dropped_frames + app.committed_frames)
