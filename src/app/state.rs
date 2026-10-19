@@ -1,11 +1,10 @@
-use std::os::raw::c_void;
-use std::ptr;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context;
 use calloop::LoopSignal;
 use ffmpeg_sys_next::{AVFrame, av_frame_free, av_frame_unref};
+use wayland_client::Proxy;
 use wayland_client::protocol::wl_buffer::WlBuffer;
 use wayland_client::protocol::{wl_output::WlOutput, wl_surface::WlSurface};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_buffer_params_v1::{
@@ -26,10 +25,6 @@ pub struct Monitor {
     pub name: Option<String>,
     pub output: Option<WlOutput>,
     pub surface: Option<WlSurface>,
-
-    /// Pointer to the native wl_surface (for wl_egl_window_create).
-    pub wl_surface_ptr: *mut c_void,
-
     pub layer_surface: Option<ZwlrLayerSurfaceV1>,
     pub viewport: Option<WpViewport>,
 
@@ -46,7 +41,6 @@ impl Monitor {
             name: None,
             output: Some(output),
             surface: None,
-            wl_surface_ptr: ptr::null_mut(),
             layer_surface: None,
             viewport: None,
             physical_width: 0,
@@ -54,6 +48,14 @@ impl Monitor {
             logical_width: 0,
             logical_height: 0,
             configured: false,
+        }
+    }
+
+    pub fn wl_surface(&self) -> *mut std::ffi::c_void {
+        if let Some(surface) = self.surface.as_ref() {
+            surface.id().as_ptr() as *mut std::ffi::c_void
+        } else {
+            std::ptr::null_mut()
         }
     }
 }

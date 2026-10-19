@@ -217,11 +217,11 @@ fn initialize_gl_egl(app: &mut App) -> Result<(), anyhow::Error> {
     let mut egl_make_current = true;
 
     for monitor in app.monitors.iter() {
-        if monitor.wl_surface_ptr.is_null() {
+        let wl_surface_ptr = if monitor.wl_surface().is_null() {
             bail!("Could not obtain the native pointer of the wl_surface");
-        }
-
-        let wl_surface_ptr = monitor.wl_surface_ptr;
+        } else {
+            monitor.wl_surface()
+        };
 
         let width = if monitor.physical_width > 0 {
             monitor.physical_width

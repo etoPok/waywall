@@ -39,8 +39,6 @@ pub fn create_surface(
     layer_surface.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
     layer_surface.set_exclusive_zone(-1);
 
-    monitor.wl_surface_ptr = surface.id().as_ptr() as *mut std::ffi::c_void;
-
     if let Some(vp) = &viewporter {
         let viewport = vp.get_viewport(&surface, qh, ());
         monitor.viewport = Some(viewport);
