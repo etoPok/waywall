@@ -1,7 +1,7 @@
-use std::os::raw::c_void;
+use std::ffi::c_void;
 
 use crate::render::egl::{
-    eglDestroyContext, eglDestroySurface, eglMakeCurrent, EGL_NO_CONTEXT, EGL_NO_SURFACE,
+    EGL_NO_CONTEXT, EGL_NO_SURFACE, eglDestroyContext, eglDestroySurface, eglMakeCurrent,
 };
 use crate::render::egl::{wl_egl_window_destroy, wl_egl_window_resize};
 use crate::shader::{QuadGeometry, Shader};
@@ -10,6 +10,10 @@ pub struct RenderState {
     pub egl_display: *mut c_void,
     pub egl_surface: *mut c_void,
     pub egl_window: *mut c_void,
+
+    pub surface: wayland_client::protocol::wl_surface::WlSurface,
+    pub wl_callback_handled: bool,
+
     pub width: i32,
     pub height: i32,
 }
@@ -30,6 +34,25 @@ impl Drop for RenderState {
 
 #[allow(dead_code)]
 impl RenderState {
+    pub fn new(
+        egl_display: *mut c_void,
+        egl_surface: *mut c_void,
+        egl_window: *mut c_void,
+        surface: wayland_client::protocol::wl_surface::WlSurface,
+        width: i32,
+        height: i32,
+    ) -> Self {
+        Self {
+            egl_display,
+            egl_surface,
+            egl_window,
+            surface,
+            wl_callback_handled: true,
+            width,
+            height,
+        }
+    }
+
     pub fn resize(&mut self, width: i32, height: i32) {
         unsafe {
             wl_egl_window_resize(self.egl_window, width, height, 0, 0);

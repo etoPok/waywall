@@ -4,6 +4,7 @@ use wayland_client::{
     globals::GlobalListContents,
     protocol::{
         wl_buffer::{self, WlBuffer},
+        wl_callback::WlCallback,
         wl_compositor::WlCompositor,
         wl_output::{self, WlOutput},
         wl_region::WlRegion,
@@ -34,6 +35,8 @@ delegate_noop!(App: ignore WlSeat);
 delegate_noop!(App: ignore ZwlrLayerShellV1);
 delegate_noop!(App: ignore WpViewporter);
 delegate_noop!(App: ignore WpViewport);
+delegate_noop!(App: ignore ZwpLinuxDmabufV1);
+delegate_noop!(App: ignore WlRegion);
 
 impl Dispatch<WlRegistry, GlobalListContents> for App {
     fn event(
@@ -197,26 +200,17 @@ impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for App {
     }
 }
 
-impl Dispatch<ZwpLinuxDmabufV1, ()> for App {
+impl Dispatch<WlCallback, usize> for App {
     fn event(
-        _state: &mut Self,
-        _proxy: &ZwpLinuxDmabufV1,
-        _event: <ZwpLinuxDmabufV1 as Proxy>::Event,
-        _data: &(),
+        state: &mut Self,
+        _proxy: &WlCallback,
+        _event: <WlCallback as Proxy>::Event,
+        data: &usize,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-    }
-}
-
-impl Dispatch<WlRegion, ()> for App {
-    fn event(
-        _state: &mut Self,
-        _proxy: &WlRegion,
-        _event: <WlRegion as Proxy>::Event,
-        _date: &(),
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-    ) {
+        if let Some(rs) = state.render_states.get_mut(*data) {
+            rs.wl_callback_handled = true;
+        }
     }
 }

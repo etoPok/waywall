@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::Context;
 use calloop::timer::Timer;
 use ffmpeg_sys_next::AVFrame;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use waywall::app::state::App;
 
@@ -76,6 +76,13 @@ fn main() -> anyhow::Result<()> {
         .run(None, &mut app, |_app| {})
         .context("Error in event loop")?;
 
+    info!(
+        "committed_frames={}, dropped_frames={}, total_frames={}",
+        app.committed_frames,
+        app.dropped_frames,
+        (app.dropped_frames + app.committed_frames)
+    );
+
     if test_args.prod.use_hwdec {
         let total = app.wl_buffer_states.iter().filter(|s| s.is_some()).count();
         let in_use = app
@@ -84,21 +91,16 @@ fn main() -> anyhow::Result<()> {
             .flatten()
             .filter(|wbs| wbs.in_use)
             .count();
-        debug!(
-            "total_buffers={}/{}, in_use={}, committed_frames={}, dropped_frames={}, total_frames={}",
+        info!(
+            "total_buffers={}/{}, in_use={}",
             total,
             app.wl_buffer_states.len(),
             in_use,
-            app.committed_frames,
-            app.dropped_frames,
-            (app.dropped_frames + app.committed_frames)
         );
     } else {
-        debug!(
-            "committed_frames={}, dropped_frames={}, total_frames={}",
-            app.committed_frames,
-            app.dropped_frames,
-            (app.dropped_frames + app.committed_frames)
+        info!(
+            "skipped_frames_unhandled_wl_callback={}",
+            app.skipped_frames_unhandled_wl_callback
         );
     }
 
@@ -144,7 +146,12 @@ fn on_egl_gl_frame(app: &mut App, frame: *mut AVFrame) {
 
         waywall::render::frame::upload_frame(&gl_ctx.textures, frame);
 
-        for rs in app.render_states.iter_mut() {
+        for (i, rs) in app.render_states.iter_mut().enumerate() {
+            if !rs.wl_callback_handled {
+                app.skipped_frames_unhandled_wl_callback += 1;
+                continue;
+            }
+
             waywall::render::egl::eglMakeCurrent(
                 rs.egl_display,
                 rs.egl_surface,
@@ -159,12 +166,15 @@ fn on_egl_gl_frame(app: &mut App, frame: *mut AVFrame) {
             shader.use_program();
 
             let num_textures = gl_ctx.textures.len();
-            for i in 0..num_textures {
-                gl::ActiveTexture(gl::TEXTURE0 + i as u32);
-                gl::BindTexture(gl::TEXTURE_2D, gl_ctx.textures[i]);
+            for t in 0..num_textures {
+                gl::ActiveTexture(gl::TEXTURE0 + t as u32);
+                gl::BindTexture(gl::TEXTURE_2D, gl_ctx.textures[t]);
             }
 
             gl_ctx.quad.draw();
+
+            rs.surface.frame(&app.wl_conn.qh, i);
+            rs.wl_callback_handled = false;
 
             waywall::render::egl::eglSwapBuffers(rs.egl_display, rs.egl_surface);
         }

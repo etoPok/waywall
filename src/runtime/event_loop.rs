@@ -170,7 +170,12 @@ fn on_egl_gl_frame(app: &mut App, frame: *mut AVFrame) {
 
         crate::render::frame::upload_frame(&gl_ctx.textures, frame);
 
-        for rs in app.render_states.iter_mut() {
+        for (i, rs) in app.render_states.iter_mut().enumerate() {
+            if !rs.wl_callback_handled {
+                app.skipped_frames_unhandled_wl_callback += 1;
+                continue;
+            }
+
             crate::render::egl::eglMakeCurrent(
                 rs.egl_display,
                 rs.egl_surface,
@@ -185,12 +190,15 @@ fn on_egl_gl_frame(app: &mut App, frame: *mut AVFrame) {
             shader.use_program();
 
             let num_textures = gl_ctx.textures.len();
-            for i in 0..num_textures {
-                gl::ActiveTexture(gl::TEXTURE0 + i as u32);
-                gl::BindTexture(gl::TEXTURE_2D, gl_ctx.textures[i]);
+            for t in 0..num_textures {
+                gl::ActiveTexture(gl::TEXTURE0 + t as u32);
+                gl::BindTexture(gl::TEXTURE_2D, gl_ctx.textures[t]);
             }
 
             gl_ctx.quad.draw();
+
+            rs.surface.frame(&app.wl_conn.qh, i);
+            rs.wl_callback_handled = false;
 
             crate::render::egl::eglSwapBuffers(rs.egl_display, rs.egl_surface);
         }

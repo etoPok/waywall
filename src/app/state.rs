@@ -144,6 +144,7 @@ pub struct App {
     // Stats
     pub committed_frames: u64,
     pub dropped_frames: u64,
+    pub skipped_frames_unhandled_wl_callback: u64,
     pub frames_per_stats_sample: u64,
     pub last_stats_time: Option<Instant>,
 }
@@ -165,6 +166,7 @@ impl App {
             last_pts: None,
             committed_frames: 0,
             dropped_frames: 0,
+            skipped_frames_unhandled_wl_callback: 0,
             frames_per_stats_sample: 0,
             last_stats_time: None,
         }

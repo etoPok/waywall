@@ -253,13 +253,14 @@ fn initialize_gl_egl(app: &mut App) -> Result<(), anyhow::Error> {
             egl_make_current = false;
         }
 
-        app.render_states.push(RenderState {
+        app.render_states.push(RenderState::new(
             egl_display,
             egl_surface,
             egl_window,
+            monitor.surface.as_ref().unwrap().clone(),
             width,
             height,
-        });
+        ));
     }
 
     gl::load_with(|name| {
