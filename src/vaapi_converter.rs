@@ -1,4 +1,3 @@
-use std::ffi::CString;
 use std::ptr;
 
 use anyhow::Result;
@@ -43,7 +42,7 @@ impl VaapiConverter {
             }
             let mut src_ctx: *mut AVFilterContext = ptr::null_mut();
 
-            let src_args = CString::new(format!(
+            let src_args = std::ffi::CString::new(format!(
                 "video_size={}x{}:pix_fmt={}:time_base=1/30:pixel_aspect=1/1:colorspace=bt709:range=tv",
                 width,
                 height,
@@ -72,7 +71,7 @@ impl VaapiConverter {
             if !(*params).hw_frames_ctx.is_null() {
                 av_buffer_unref(&mut (*params).hw_frames_ctx);
             }
-            av_free(params as *mut libc::c_void);
+            av_free(params as *mut std::ffi::c_void);
 
             let scale_filter = avfilter_get_by_name(c"scale_vaapi".as_ptr());
             if scale_filter.is_null() {
@@ -81,7 +80,7 @@ impl VaapiConverter {
             }
             let mut scale_ctx: *mut AVFilterContext = ptr::null_mut();
 
-            let scale_args = CString::new(format!(
+            let scale_args = std::ffi::CString::new(format!(
                 "w={}:h={}:format=bgra:out_range=full",
                 width, height
             ))?;
@@ -124,7 +123,7 @@ impl VaapiConverter {
                 AVPixelFormat::AV_PIX_FMT_NONE as i32,
             ];
             av_opt_set_bin(
-                sink_ctx as *mut libc::c_void,
+                sink_ctx as *mut std::ffi::c_void,
                 c"pix_fmts".as_ptr(),
                 pix_fmts.as_ptr() as *const u8,
                 (pix_fmts.len() * std::mem::size_of::<i32>()) as i32,

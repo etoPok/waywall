@@ -63,7 +63,8 @@ pub fn build_common_loop(
     app.last_stats_time = Some(Instant::now());
 
     debug!("Event loop started. Ctrl+C to exit.");
-    unsafe { crate::runtime::signals::ctrlc_setup(loop_signal.clone()) };
+    crate::runtime::signals::ctrlc_setup(loop_signal.clone())
+        .context("Error setting up signal handlers")?;
 
     Ok((event_loop, loop_signal))
 }
