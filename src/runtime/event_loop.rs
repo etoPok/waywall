@@ -1,12 +1,12 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::app::state::App;
 use crate::shader::Shader;
 use crate::vaapi_converter::VaapiConverter;
 use anyhow::Context;
+use calloop::EventLoop;
 use calloop::ping::PingSource;
 use calloop::timer::{TimeoutAction, Timer};
-use calloop::{EventLoop, LoopSignal};
 use calloop_wayland_source::WaylandSource;
 use ffmpeg_sys_next::{AVFrame, AVPixelFormat};
 use tracing::{debug, error, info, warn};
@@ -16,12 +16,10 @@ pub fn build_common_loop(
     app: &mut App,
     queue: EventQueue<App>,
     error_ping_source: PingSource,
-) -> anyhow::Result<(EventLoop<'static, App>, LoopSignal)> {
+) -> anyhow::Result<EventLoop<'static, App>> {
     let event_loop: EventLoop<'static, App> =
         EventLoop::try_new().context("Error creating event loop")?;
-
-    let loop_signal = event_loop.get_signal();
-    app.main_loop_signal = Some(loop_signal.clone());
+    app.main_loop_signal = Some(event_loop.get_signal());
 
     WaylandSource::new(app.wl_conn.conn.clone(), queue)
         .insert(event_loop.handle())
@@ -30,43 +28,29 @@ pub fn build_common_loop(
     event_loop
         .handle()
         .insert_source(error_ping_source, |(), _, app| {
-            if let Some(ref signal) = app.main_loop_signal {
-                signal.stop();
-            }
+            app.stop_main_loop();
         })
         .map_err(|e| anyhow::anyhow!("Error registering decoder error ping: {}", e))?;
 
-    let stats_timer = Timer::from_duration(Duration::from_secs(5));
     event_loop
         .handle()
-        .insert_source(stats_timer, |_, _, app| {
+        .insert_source(Timer::from_duration(Duration::from_secs(5)), |_, _, app| {
             let frames = app.frames_per_stats_sample;
-            let elapsed = app
-                .last_stats_time
-                .map(|t| t.elapsed().as_secs_f64())
-                .unwrap_or(5.0);
-            let fps = if elapsed > 0.0 {
-                frames as f64 / elapsed
-            } else {
-                0.0
-            };
+            let fps = frames as f64 / 5.0;
             info!(
                 "Stats: {:.1} fps, {} frames, {} dropped frames",
                 fps, frames, app.dropped_frames
             );
             app.frames_per_stats_sample = 0;
-            app.last_stats_time = Some(Instant::now());
             calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(5))
         })
         .map_err(|e| anyhow::anyhow!("Error registering stats timer: {}", e))?;
 
-    app.last_stats_time = Some(Instant::now());
-
-    debug!("Event loop started. Ctrl+C to exit.");
-    crate::runtime::signals::ctrlc_setup(loop_signal.clone())
+    crate::runtime::signals::ctrlc_setup(app.main_loop_signal.as_ref().unwrap().clone())
         .context("Error setting up signal handlers")?;
+    debug!("Event loop started. Ctrl+C to exit.");
 
-    Ok((event_loop, loop_signal))
+    Ok(event_loop)
 }
 
 fn run_with<F>(
@@ -79,7 +63,7 @@ fn run_with<F>(
 where
     F: Fn(&mut App, *mut AVFrame) + 'static,
 {
-    let (mut event_loop, _) = build_common_loop(&mut app, queue, error_ping_source)?;
+    let mut event_loop = build_common_loop(&mut app, queue, error_ping_source)?;
 
     let pacer = Timer::immediate();
     event_loop
@@ -219,9 +203,7 @@ fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
             None => {
                 error!("VAAPI converter: hw_frames_ctx not available");
                 app.frame_queue.commit_read();
-                if let Some(ref signal) = app.main_loop_signal {
-                    signal.stop();
-                }
+                app.stop_main_loop();
                 return;
             }
         };
@@ -232,9 +214,7 @@ fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
             Err(e) => {
                 error!("Failed to create VAAPI converter: {e:#}");
                 app.frame_queue.commit_read();
-                if let Some(ref signal) = app.main_loop_signal {
-                    signal.stop();
-                }
+                app.stop_main_loop();
                 return;
             }
         }

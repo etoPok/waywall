@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Instant;
 
 use anyhow::Context;
 use calloop::LoopSignal;
@@ -146,7 +145,6 @@ pub struct App {
     pub dropped_frames: u64,
     pub skipped_frames_unhandled_wl_callback: u64,
     pub frames_per_stats_sample: u64,
-    pub last_stats_time: Option<Instant>,
 }
 
 impl App {
@@ -168,7 +166,6 @@ impl App {
             dropped_frames: 0,
             skipped_frames_unhandled_wl_callback: 0,
             frames_per_stats_sample: 0,
-            last_stats_time: None,
         }
     }
 
@@ -327,6 +324,12 @@ impl App {
         }
 
         Ok(())
+    }
+
+    pub fn stop_main_loop(&self) {
+        if let Some(signal) = self.main_loop_signal.as_ref() {
+            signal.stop();
+        }
     }
 }
 

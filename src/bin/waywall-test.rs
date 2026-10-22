@@ -25,7 +25,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let mut app = bootstrap_output.app;
-    let (mut event_loop, _) = waywall::runtime::event_loop::build_common_loop(
+    let mut event_loop = waywall::runtime::event_loop::build_common_loop(
         &mut app,
         bootstrap_output.queue,
         bootstrap_output.error_ping_source,
