@@ -18,10 +18,13 @@ use crate::render::egl::{
 use crate::render::state::{GlContext, RenderState};
 use crate::timing::Timing;
 use crate::wayland::connection::WlConnection;
+use crate::wayland::ipc::{Compositor, CompositorChannel, CompositorEvent, CompositorEventKind};
 
 pub struct BootstrapOutput {
     pub app: App,
     pub queue: EventQueue<App>,
+    pub compositor: Box<dyn Compositor>,
+    pub channel: CompositorChannel,
     pub ping_source: calloop::ping::PingSource,
     pub error_ping_source: calloop::ping::PingSource,
 }
@@ -36,6 +39,7 @@ pub fn bootstrap(args: &Args) -> Result<BootstrapOutput> {
 
 pub fn bootstrap_gl_egl(args: &Args) -> Result<BootstrapOutput> {
     let (mut app, mut queue) = common_connection()?;
+    let (compositor, channel) = setup_compositor_ipc()?;
 
     queue
         .roundtrip(&mut app)
@@ -61,6 +65,8 @@ pub fn bootstrap_gl_egl(args: &Args) -> Result<BootstrapOutput> {
     Ok(BootstrapOutput {
         app,
         queue,
+        compositor,
+        channel,
         ping_source,
         error_ping_source,
     })
@@ -68,6 +74,7 @@ pub fn bootstrap_gl_egl(args: &Args) -> Result<BootstrapOutput> {
 
 pub fn bootstrap_drm(args: &Args) -> Result<BootstrapOutput> {
     let (mut app, mut queue) = common_connection()?;
+    let (compositor, channel) = setup_compositor_ipc()?;
     app.wl_conn.bind_zwp_linux_dmabuf_v1()?;
     let feedback = app.wl_conn.get_default_feedback()?;
 
@@ -112,6 +119,8 @@ pub fn bootstrap_drm(args: &Args) -> Result<BootstrapOutput> {
     Ok(BootstrapOutput {
         app,
         queue,
+        compositor,
+        channel,
         ping_source,
         error_ping_source,
     })
@@ -119,9 +128,9 @@ pub fn bootstrap_drm(args: &Args) -> Result<BootstrapOutput> {
 
 fn common_connection() -> Result<(App, EventQueue<App>)> {
     let (conn, globals, queue) = WlConnection::connect()?;
-    let (compositor, layer_shell) =
+    let (wl_compositor, layer_shell) =
         WlConnection::bind_required_protocol_extensions(&globals, &queue)?;
-    let mut wl_conn = WlConnection::new(conn, globals, queue.handle(), compositor, layer_shell);
+    let mut wl_conn = WlConnection::new(conn, globals, queue.handle(), wl_compositor, layer_shell);
     wl_conn.bind_wp_viewporter()?;
 
     let mut app = App::new(wl_conn, Decoder::new(), Timing::new());
@@ -133,6 +142,27 @@ fn common_connection() -> Result<(App, EventQueue<App>)> {
     );
 
     Ok((app, queue))
+}
+
+fn setup_compositor_ipc() -> Result<(Box<dyn Compositor>, CompositorChannel)> {
+    let mut compositor: Box<dyn Compositor> =
+        if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
+            Box::new(crate::wayland::ipc::hyprland::Hyprland::connect()?)
+        } else {
+            anyhow::bail!("Compositor not fonund!");
+        };
+
+    compositor.subscribe(
+        CompositorEventKind::WorkspaceChanged,
+        Box::new(|_app, event| {
+            if let CompositorEvent::WorkspaceChanged(id) = event {
+                tracing::info!("WorkspaceChanged {id}");
+            }
+        }),
+    );
+
+    let channel = calloop::channel::channel();
+    Ok((compositor, channel))
 }
 
 fn configure_timing(decoder: &Decoder, timing: &mut Timing, fps: Option<u64>) {

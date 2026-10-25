@@ -3,6 +3,7 @@ use std::time::Duration;
 use crate::app::state::App;
 use crate::shader::Shader;
 use crate::vaapi_converter::VaapiConverter;
+use crate::wayland::ipc::{Compositor, CompositorChannel};
 use anyhow::Context;
 use calloop::EventLoop;
 use calloop::ping::PingSource;
@@ -15,6 +16,8 @@ use wayland_client::EventQueue;
 pub fn build_common_loop(
     app: &mut App,
     queue: EventQueue<App>,
+    compositor: Box<dyn Compositor>,
+    channel: CompositorChannel,
     error_ping_source: PingSource,
 ) -> anyhow::Result<EventLoop<'static, App>> {
     let event_loop: EventLoop<'static, App> =
@@ -31,6 +34,31 @@ pub fn build_common_loop(
             app.stop_main_loop();
         })
         .map_err(|e| anyhow::anyhow!("Error registering decoder error ping: {}", e))?;
+
+    let compositor = std::rc::Rc::new(std::cell::RefCell::new(compositor));
+    let compositor_for_spawn = std::rc::Rc::clone(&compositor);
+    let (tx, rx) = channel;
+    event_loop
+        .handle()
+        .insert_source(rx, move |event, _, app| {
+            if let calloop::channel::Event::Msg(event) = event {
+                compositor.borrow().dispatch(&event, app);
+            }
+        })
+        .map_err(|e| anyhow::anyhow!("Error registering compositor channel: {}", e))?;
+
+    let mut tx = Some(tx);
+    event_loop
+        .handle()
+        .insert_source(Timer::immediate(), move |_, _, _| {
+            if let Some(tx) = tx.take()
+                && let Err(e) = compositor_for_spawn.borrow_mut().spawn_event_reader(tx)
+            {
+                error!("{e:#}");
+            }
+            TimeoutAction::Drop
+        })
+        .map_err(|e| anyhow::anyhow!("Error registering reader spawn source: {}", e))?;
 
     event_loop
         .handle()
@@ -54,21 +82,28 @@ pub fn build_common_loop(
 }
 
 fn run_with<F>(
-    mut app: App,
-    queue: EventQueue<App>,
-    _decoded_frame_ping_source: PingSource,
-    error_ping_source: PingSource,
+    bootstrap_output: crate::app::bootstrap::BootstrapOutput,
     on_frame: F,
 ) -> anyhow::Result<()>
 where
     F: Fn(&mut App, *mut AVFrame) + 'static,
 {
-    let mut event_loop = build_common_loop(&mut app, queue, error_ping_source)?;
+    let crate::app::bootstrap::BootstrapOutput {
+        mut app,
+        queue,
+        compositor,
+        channel,
+        ping_source: _,
+        error_ping_source,
+    } = bootstrap_output;
+    let mut event_loop =
+        build_common_loop(&mut app, queue, compositor, channel, error_ping_source)?;
 
-    let pacer = Timer::immediate();
     event_loop
         .handle()
-        .insert_source(pacer, move |_, _, app| pacer_tick(app, &on_frame))
+        .insert_source(Timer::immediate(), move |_, _, app| {
+            pacer_tick(app, &on_frame)
+        })
         .map_err(|e| anyhow::anyhow!("Error registering pacer_tick: {e:#}"))?;
 
     event_loop
@@ -81,27 +116,12 @@ where
 
 pub fn run(
     args: &crate::cli::args::Args,
-    app: App,
-    queue: EventQueue<App>,
-    frame_decoded_ping_source: PingSource,
-    error_ping_source: PingSource,
+    bootstrap_output: crate::app::bootstrap::BootstrapOutput,
 ) -> anyhow::Result<()> {
     if args.use_hwdec {
-        run_with(
-            app,
-            queue,
-            frame_decoded_ping_source,
-            error_ping_source,
-            on_drm_frame,
-        )
+        run_with(bootstrap_output, on_drm_frame)
     } else {
-        run_with(
-            app,
-            queue,
-            frame_decoded_ping_source,
-            error_ping_source,
-            on_egl_gl_frame,
-        )
+        run_with(bootstrap_output, on_egl_gl_frame)
     }
 }
 

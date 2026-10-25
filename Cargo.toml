@@ -45,3 +45,5 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 # POSIX poll and signals (clean shutdown)
 nix = { version = "0.31.3", features = ["poll", "signal"] }
+
+serde_json = "1.0"

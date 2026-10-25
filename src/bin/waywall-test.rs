@@ -24,11 +24,20 @@ fn main() -> anyhow::Result<()> {
         waywall::app::bootstrap::bootstrap_gl_egl(&test_args.prod)?
     };
 
-    let mut app = bootstrap_output.app;
+    let waywall::app::bootstrap::BootstrapOutput {
+        mut app,
+        queue,
+        compositor,
+        channel,
+        ping_source: _,
+        error_ping_source,
+    } = bootstrap_output;
     let mut event_loop = waywall::runtime::event_loop::build_common_loop(
         &mut app,
-        bootstrap_output.queue,
-        bootstrap_output.error_ping_source,
+        queue,
+        compositor,
+        channel,
+        error_ping_source,
     )
     .context("build_common_loop")?;
 
