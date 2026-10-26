@@ -19,51 +19,67 @@ pub struct Hyprland {
 
 impl Hyprland {
     pub fn connect() -> anyhow::Result<Self> {
+        let (request_socket, event_socket) = Self::sockets_from_env()?;
+
+        let this = Self {
+            request_socket,
+            event_socket,
+            handlers: Default::default(),
+            reader: None,
+        };
+
+        this.active_workspace()
+            .context("Hyprland is reachable but did not answer a request")?;
+        let probe = UnixStream::connect(&this.event_socket).with_context(|| {
+            format!(
+                "Cannot connect to Hyprland event socket {:?}",
+                this.event_socket
+            )
+        })?;
+        drop(probe);
+
+        Ok(this)
+    }
+
+    fn sockets_from_env() -> anyhow::Result<(PathBuf, PathBuf)> {
         let sig = std::env::var("HYPRLAND_INSTANCE_SIGNATURE")
             .context("HYPRLAND_INSTANCE_SIGNATURE not set")?;
-
         let xdg = std::env::var("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR not set")?;
+        let dir = PathBuf::from(xdg).join("hypr").join(sig);
 
-        let dir = PathBuf::from(xdg).join("hypr").join(&sig);
         let request_socket = dir.join(".socket.sock");
         let event_socket = dir.join(".socket2.sock");
-
         if !request_socket.exists() || !event_socket.exists() {
             anyhow::bail!("Hyprland sockets not found in {:?}", dir);
         }
 
-        Ok(Self {
-            event_socket,
-            request_socket,
-            handlers: std::collections::HashMap::new(),
-            reader: None,
-        })
+        Ok((request_socket, event_socket))
     }
 
     fn reader_loop(
         path: PathBuf,
         tx: calloop::channel::Sender<CompositorEvent>,
         shutdown: Arc<AtomicBool>,
-        socket: Arc<Mutex<Option<UnixStream>>>,
+        stream: Arc<Mutex<Option<UnixStream>>>,
     ) {
         while !shutdown.load(Ordering::Acquire) {
             match UnixStream::connect(&path) {
-                Ok(stream) => {
-                    let clone = match stream.try_clone() {
+                Ok(s) => {
+                    let clone = match s.try_clone() {
                         Ok(clone) => clone,
                         Err(_) => {
                             Self::wait_before_retry(&shutdown);
                             continue;
                         }
                     };
-                    *socket.lock().unwrap() = Some(clone);
+                    *stream.lock().unwrap() = Some(clone);
 
                     if shutdown.load(Ordering::Acquire) {
-                        *socket.lock().unwrap() = None;
+                        *stream.lock().unwrap() = None;
                         break;
                     }
 
-                    let reader = BufReader::new(stream);
+                    let reader = BufReader::new(s);
                     for line in reader.lines() {
                         if shutdown.load(Ordering::Acquire) {
                             break;
@@ -80,12 +96,12 @@ impl Hyprland {
                         if let Some(event) = Self::parse_event(trimmed)
                             && tx.send(event).is_err()
                         {
-                            *socket.lock().unwrap() = None;
+                            *stream.lock().unwrap() = None;
                             return; // main loop dead
                         }
                     }
 
-                    *socket.lock().unwrap() = None;
+                    *stream.lock().unwrap() = None;
                     if shutdown.load(Ordering::Acquire) {
                         break;
                     }
@@ -112,7 +128,7 @@ impl Hyprland {
 
         reader.shutdown.store(true, Ordering::Release);
         let socket = {
-            let mut slot = reader.socket.lock().unwrap();
+            let mut slot = reader.stream.lock().unwrap();
             slot.take()
         };
         if let Some(socket) = socket {
@@ -149,19 +165,19 @@ impl Compositor for Hyprland {
 
         let path = self.event_socket.clone();
         let shutdown = Arc::new(AtomicBool::new(false));
-        let socket: Arc<Mutex<Option<UnixStream>>> = Arc::new(Mutex::new(None));
+        let stream = Arc::new(Mutex::new(None));
 
         let shutdown_for_thread = Arc::clone(&shutdown);
-        let socket_for_thread = Arc::clone(&socket);
+        let stream_for_thread = Arc::clone(&stream);
         let thread = std::thread::Builder::new()
             .name("hyprland-events".into())
             .spawn(move || {
-                Self::reader_loop(path, tx, shutdown_for_thread, socket_for_thread);
+                Self::reader_loop(path, tx, shutdown_for_thread, stream_for_thread);
             })?;
 
         self.reader = Some(CompositorEventReader {
             shutdown,
-            socket,
+            stream,
             thread,
         });
 

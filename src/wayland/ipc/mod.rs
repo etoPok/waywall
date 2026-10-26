@@ -2,7 +2,7 @@ pub mod hyprland;
 
 pub struct CompositorEventReader {
     pub shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    pub socket: std::sync::Arc<std::sync::Mutex<Option<std::os::unix::net::UnixStream>>>,
+    pub stream: std::sync::Arc<std::sync::Mutex<Option<std::os::unix::net::UnixStream>>>,
     pub thread: std::thread::JoinHandle<()>,
 }
 
