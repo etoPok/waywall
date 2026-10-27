@@ -1,4 +1,5 @@
 pub mod hyprland;
+pub mod niri;
 
 pub struct CompositorEventReader {
     pub shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,

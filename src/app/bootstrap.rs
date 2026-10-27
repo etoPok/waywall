@@ -148,6 +148,8 @@ fn setup_compositor_ipc() -> Result<(Box<dyn Compositor>, CompositorChannel)> {
     let mut compositor: Box<dyn Compositor> =
         if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
             Box::new(crate::wayland::ipc::hyprland::Hyprland::connect()?)
+        } else if std::env::var_os("NIRI_SOCKET").is_some() {
+            Box::new(crate::wayland::ipc::niri::Niri::connect()?)
         } else {
             anyhow::bail!("Compositor not fonund!");
         };
@@ -156,7 +158,7 @@ fn setup_compositor_ipc() -> Result<(Box<dyn Compositor>, CompositorChannel)> {
         CompositorEventKind::WorkspaceChanged,
         Box::new(|_app, event| {
             if let CompositorEvent::WorkspaceChanged(id) = event {
-                tracing::info!("WorkspaceChanged {id}");
+                tracing::info!("CompositorHandler: WorkspaceChanged {id}");
             }
         }),
     );
