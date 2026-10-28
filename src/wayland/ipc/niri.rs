@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use crate::wayland::ipc::{
     Compositor, CompositorEvent, CompositorEventKind, CompositorEventReader, CompositorHandler,
+    wait_for_shutdown,
 };
 use anyhow::Context;
 
@@ -126,41 +127,18 @@ impl Niri {
             match connect_and_read(&path, &tx, &shutdown, &stream) {
                 Ok(()) => {
                     if !shutdown.load(Ordering::Acquire) {
-                        Self::wait_before_retry(&shutdown);
+                        wait_for_shutdown(&shutdown);
                         tracing::info!("Reconectando con el compositor Niri");
                     }
                 }
                 Err(e) => {
                     tracing::info!("Error in reader loop: {}", e);
                     if !shutdown.load(Ordering::Acquire) {
-                        Self::wait_before_retry(&shutdown);
+                        wait_for_shutdown(&shutdown);
                     }
                 }
             }
         }
-    }
-
-    fn wait_before_retry(shutdown: &AtomicBool) {
-        let deadline = std::time::Instant::now() + Duration::from_millis(500);
-        while !shutdown.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    }
-
-    fn stop_reader(&mut self) {
-        let Some(reader) = self.reader.take() else {
-            return;
-        };
-
-        reader.shutdown.store(true, Ordering::Release);
-        let socket = {
-            let mut slot = reader.stream.lock().unwrap();
-            slot.take()
-        };
-        if let Some(socket) = socket {
-            let _ = socket.shutdown(std::net::Shutdown::Both);
-        }
-        let _ = reader.thread.join();
     }
 
     pub fn parse_event(line: &str) -> anyhow::Result<CompositorEvent> {
@@ -207,7 +185,7 @@ impl Compositor for Niri {
         self.reader = Some(CompositorEventReader {
             shutdown,
             stream,
-            thread,
+            thread: Some(thread),
         });
 
         Ok(())
@@ -250,12 +228,5 @@ impl Compositor for Niri {
                 anyhow::bail!("request failed: {}", error_msg);
             }
         }
-    }
-}
-
-impl Drop for Niri {
-    fn drop(&mut self) {
-        self.stop_reader();
-        tracing::info!("drop compositor");
     }
 }

@@ -3,10 +3,10 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use crate::wayland::ipc::{
     Compositor, CompositorEvent, CompositorEventKind, CompositorEventReader, CompositorHandler,
+    wait_for_shutdown,
 };
 use anyhow::Context;
 
@@ -68,7 +68,7 @@ impl Hyprland {
                     let clone = match s.try_clone() {
                         Ok(clone) => clone,
                         Err(_) => {
-                            Self::wait_before_retry(&shutdown);
+                            wait_for_shutdown(&shutdown);
                             continue;
                         }
                     };
@@ -105,36 +105,13 @@ impl Hyprland {
                     if shutdown.load(Ordering::Acquire) {
                         break;
                     }
-                    Self::wait_before_retry(&shutdown);
+                    wait_for_shutdown(&shutdown);
                 }
                 Err(_) => {
-                    Self::wait_before_retry(&shutdown);
+                    wait_for_shutdown(&shutdown);
                 }
             }
         }
-    }
-
-    fn wait_before_retry(shutdown: &AtomicBool) {
-        let deadline = std::time::Instant::now() + Duration::from_millis(500);
-        while !shutdown.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    }
-
-    fn stop_reader(&mut self) {
-        let Some(reader) = self.reader.take() else {
-            return;
-        };
-
-        reader.shutdown.store(true, Ordering::Release);
-        let socket = {
-            let mut slot = reader.stream.lock().unwrap();
-            slot.take()
-        };
-        if let Some(socket) = socket {
-            let _ = socket.shutdown(std::net::Shutdown::Both);
-        }
-        let _ = reader.thread.join();
     }
 
     pub fn parse_event(line: &str) -> Option<CompositorEvent> {
@@ -178,7 +155,7 @@ impl Compositor for Hyprland {
         self.reader = Some(CompositorEventReader {
             shutdown,
             stream,
-            thread,
+            thread: Some(thread),
         });
 
         Ok(())
@@ -203,12 +180,5 @@ impl Compositor for Hyprland {
 
         let v: serde_json::Value = serde_json::from_str(&buf)?;
         v["id"].as_i64().context("missing workspace id")
-    }
-}
-
-impl Drop for Hyprland {
-    fn drop(&mut self) {
-        self.stop_reader();
-        tracing::info!("drop compositor");
     }
 }
