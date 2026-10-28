@@ -92,13 +92,13 @@ impl Niri {
                                 return Ok(());
                             }
                             Ok(_) => match Niri::parse_event(&event_buf) {
-                                Ok(event) => {
+                                Some(event) => {
                                     if tx.send(event).is_err() {
                                         *stream.lock().unwrap() = None;
                                         return Ok(());
                                     }
                                 }
-                                Err(_) => {
+                                None => {
                                     continue;
                                 }
                             },
@@ -128,11 +128,11 @@ impl Niri {
                 Ok(()) => {
                     if !shutdown.load(Ordering::Acquire) {
                         wait_for_shutdown(&shutdown);
-                        tracing::info!("Reconectando con el compositor Niri");
+                        tracing::warn!("Niri connection closed, reconnecting...");
                     }
                 }
                 Err(e) => {
-                    tracing::info!("Error in reader loop: {}", e);
+                    tracing::error!("Error in Niri event reading loop: {}", e);
                     if !shutdown.load(Ordering::Acquire) {
                         wait_for_shutdown(&shutdown);
                     }
@@ -141,18 +141,16 @@ impl Niri {
         }
     }
 
-    pub fn parse_event(line: &str) -> anyhow::Result<CompositorEvent> {
+    pub fn parse_event(line: &str) -> Option<CompositorEvent> {
         let event = serde_json::from_str::<niri_ipc::Event>(line)
-            .context("Failed to parse event from raw")?;
+            .context("Failed to parse Niri event from raw line")
+            .ok()?;
 
         match event {
             niri_ipc::Event::WorkspaceActivated { id, focused: _ } => {
-                Ok(CompositorEvent::WorkspaceChanged(id as i64))
+                Some(CompositorEvent::WorkspaceChanged(id as i64))
             }
-            _ => anyhow::bail!(
-                "Failed to parse event from niri_ipc::Event to CompositorEvent: {:?}",
-                event
-            ),
+            _ => None,
         }
     }
 }
@@ -220,12 +218,12 @@ impl Compositor for Niri {
                 .iter()
                 .find(|w| w.is_focused)
                 .map(|w| w.id as i64)
-                .context("no active workspace found"),
+                .context("No active workspace found"),
             Ok(other) => {
-                anyhow::bail!("unexpected response: {:?}", other);
+                anyhow::bail!("Unexpected response: {:?}", other);
             }
             Err(error_msg) => {
-                anyhow::bail!("request failed: {}", error_msg);
+                anyhow::bail!("Request failed: {}", error_msg);
             }
         }
     }

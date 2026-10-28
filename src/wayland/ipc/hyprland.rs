@@ -106,9 +106,11 @@ impl Hyprland {
                         break;
                     }
                     wait_for_shutdown(&shutdown);
+                    tracing::warn!("Hyprland connection closed, reconnecting...");
                 }
                 Err(_) => {
                     wait_for_shutdown(&shutdown);
+                    tracing::error!("Hyprland connection error, reconnecting...");
                 }
             }
         }
