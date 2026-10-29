@@ -65,19 +65,19 @@ fn main() -> anyhow::Result<()> {
         )
         .map_err(|e| anyhow::anyhow!("Error registering grace timer: {}", e))?;
 
-    let parce = Timer::immediate();
+    let on_frame = if test_args.prod.use_hwdec {
+        on_drm_frame
+    } else {
+        on_egl_gl_frame
+    };
     event_loop
         .handle()
-        .insert_source(parce, move |_, _, app| {
+        .insert_source(Timer::immediate(), move |_, _, app| {
             if app.committed_frames + app.dropped_frames >= frames {
                 return calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(1));
             }
 
-            if test_args.prod.use_hwdec {
-                waywall::runtime::event_loop::pacer_tick(app, &on_drm_frame)
-            } else {
-                waywall::runtime::event_loop::pacer_tick(app, &on_egl_gl_frame)
-            }
+            waywall::runtime::event_loop::pacer_tick(app, &on_frame)
         })
         .map_err(|e| anyhow::anyhow!("Error registering parcer_tick: {}", e))?;
 

@@ -81,13 +81,10 @@ pub fn build_common_loop(
     Ok(event_loop)
 }
 
-fn run_with<F>(
+pub fn run(
+    args: &crate::cli::args::Args,
     bootstrap_output: crate::app::bootstrap::BootstrapOutput,
-    on_frame: F,
-) -> anyhow::Result<()>
-where
-    F: Fn(&mut App, *mut AVFrame) + 'static,
-{
+) -> anyhow::Result<()> {
     let crate::app::bootstrap::BootstrapOutput {
         mut app,
         queue,
@@ -99,6 +96,7 @@ where
     let mut event_loop =
         build_common_loop(&mut app, queue, compositor, channel, error_ping_source)?;
 
+    let on_frame = on_frame(args.use_hwdec);
     event_loop
         .handle()
         .insert_source(Timer::immediate(), move |_, _, app| {
@@ -112,17 +110,6 @@ where
 
     drop(app);
     Ok(())
-}
-
-pub fn run(
-    args: &crate::cli::args::Args,
-    bootstrap_output: crate::app::bootstrap::BootstrapOutput,
-) -> anyhow::Result<()> {
-    if args.use_hwdec {
-        run_with(bootstrap_output, on_drm_frame)
-    } else {
-        run_with(bootstrap_output, on_egl_gl_frame)
-    }
 }
 
 pub fn pacer_tick<F>(app: &mut App, on_frame: &F) -> TimeoutAction
@@ -148,6 +135,14 @@ where
             }
             d => return TimeoutAction::ToDuration(Duration::from_micros(d as u64)),
         }
+    }
+}
+
+pub fn on_frame(use_hwdec: bool) -> fn(&mut App, *mut AVFrame) {
+    if use_hwdec {
+        on_drm_frame
+    } else {
+        on_egl_gl_frame
     }
 }
 
