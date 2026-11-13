@@ -2,7 +2,7 @@ use std::ffi::CString;
 use std::os::raw::c_void;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Ok, Result, bail};
+use anyhow::{Context, Result, bail};
 use calloop::ping::{self, PingSource};
 use tracing::{debug, warn};
 use wayland_client::EventQueue;
@@ -18,12 +18,13 @@ use crate::render::egl::{
 use crate::render::state::{GlContext, RenderState};
 use crate::timing::Timing;
 use crate::wayland::connection::WlConnection;
-use crate::wayland::ipc::{Compositor, CompositorChannel, CompositorEvent, CompositorEventKind};
+use crate::wayland::ipc::{AnyCompositor, CompositorChannel, CompositorEventReader, ReadEvent};
 
 pub struct BootstrapOutput {
     pub app: App,
     pub queue: EventQueue<App>,
-    pub compositor: Box<dyn Compositor>,
+    pub compositor: AnyCompositor,
+    pub compositor_event_reader: CompositorEventReader,
     pub channel: CompositorChannel,
     pub ping_source: calloop::ping::PingSource,
     pub error_ping_source: calloop::ping::PingSource,
@@ -39,7 +40,7 @@ pub fn bootstrap(args: &Args) -> Result<BootstrapOutput> {
 
 pub fn bootstrap_gl_egl(args: &Args) -> Result<BootstrapOutput> {
     let (mut app, mut queue) = common_connection()?;
-    let (compositor, channel) = setup_compositor_ipc()?;
+    let (compositor, compositor_event_reader, channel) = setup_compositor()?;
 
     queue
         .roundtrip(&mut app)
@@ -66,6 +67,7 @@ pub fn bootstrap_gl_egl(args: &Args) -> Result<BootstrapOutput> {
         app,
         queue,
         compositor,
+        compositor_event_reader,
         channel,
         ping_source,
         error_ping_source,
@@ -74,7 +76,7 @@ pub fn bootstrap_gl_egl(args: &Args) -> Result<BootstrapOutput> {
 
 pub fn bootstrap_drm(args: &Args) -> Result<BootstrapOutput> {
     let (mut app, mut queue) = common_connection()?;
-    let (compositor, channel) = setup_compositor_ipc()?;
+    let (compositor, compositor_event_reader, channel) = setup_compositor()?;
     app.wl_conn.bind_zwp_linux_dmabuf_v1()?;
     let feedback = app.wl_conn.get_default_feedback()?;
 
@@ -120,6 +122,7 @@ pub fn bootstrap_drm(args: &Args) -> Result<BootstrapOutput> {
         app,
         queue,
         compositor,
+        compositor_event_reader,
         channel,
         ping_source,
         error_ping_source,
@@ -144,27 +147,28 @@ fn common_connection() -> Result<(App, EventQueue<App>)> {
     Ok((app, queue))
 }
 
-fn setup_compositor_ipc() -> Result<(Box<dyn Compositor>, CompositorChannel)> {
-    let mut compositor: Box<dyn Compositor> =
-        if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
-            Box::new(crate::wayland::ipc::hyprland::Hyprland::connect()?)
-        } else if std::env::var_os("NIRI_SOCKET").is_some() {
-            Box::new(crate::wayland::ipc::niri::Niri::connect()?)
-        } else {
-            anyhow::bail!("Compositor not fonund!");
-        };
+fn setup_compositor() -> Result<(AnyCompositor, CompositorEventReader, CompositorChannel)> {
+    let compositor: AnyCompositor = match crate::wayland::ipc::hyprland::Hyprland::connect() {
+        Ok(h) => AnyCompositor::Hyprland(h),
+        Err(_) => match crate::wayland::ipc::niri::Niri::connect() {
+            Ok(n) => AnyCompositor::Niri(n),
+            Err(_) => anyhow::bail!("Compositor not found!"),
+        },
+    };
 
-    compositor.subscribe(
-        CompositorEventKind::WorkspaceChanged,
-        Box::new(|_app, event| {
-            if let CompositorEvent::WorkspaceChanged(id) = event {
-                tracing::info!("CompositorHandler: WorkspaceChanged {id}");
-            }
-        }),
-    );
+    let mut compositor_event_reader = CompositorEventReader::new();
+    compositor_event_reader.add_dispatcher(Box::new(|app, event| {
+        if let ReadEvent::StatusUpdated(status) = event {
+            tracing::info!("{:?}", status);
+        }
+        if let ReadEvent::ReaderKilled(_) = event {
+            tracing::info!("Dispatch: ReaderKilled");
+            app.stop_main_loop();
+        }
+    }));
 
     let channel = calloop::channel::channel();
-    Ok((compositor, channel))
+    Ok((compositor, compositor_event_reader, channel))
 }
 
 fn configure_timing(decoder: &Decoder, timing: &mut Timing, fps: Option<u64>) {

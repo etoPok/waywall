@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::app::state::App;
 use crate::shader::Shader;
 use crate::vaapi_converter::VaapiConverter;
-use crate::wayland::ipc::{Compositor, CompositorChannel};
+use crate::wayland::ipc::{AnyCompositor, CompositorChannel, CompositorEventReader};
 use anyhow::Context;
 use calloop::EventLoop;
 use calloop::ping::PingSource;
@@ -16,7 +16,8 @@ use wayland_client::EventQueue;
 pub fn build_common_loop(
     app: &mut App,
     queue: EventQueue<App>,
-    compositor: Box<dyn Compositor>,
+    compositor: AnyCompositor,
+    compositor_event_reader: CompositorEventReader,
     channel: CompositorChannel,
     error_ping_source: PingSource,
 ) -> anyhow::Result<EventLoop<'static, App>> {
@@ -35,14 +36,15 @@ pub fn build_common_loop(
         })
         .map_err(|e| anyhow::anyhow!("Error registering decoder error ping: {}", e))?;
 
-    let compositor = std::rc::Rc::new(std::cell::RefCell::new(compositor));
-    let compositor_for_spawn = std::rc::Rc::clone(&compositor);
+    let compositor_event_reader =
+        std::rc::Rc::new(std::cell::RefCell::new(compositor_event_reader));
+    let compositor_event_reader_for_spawn = std::rc::Rc::clone(&compositor_event_reader);
     let (tx, rx) = channel;
     event_loop
         .handle()
         .insert_source(rx, move |event, _, app| {
             if let calloop::channel::Event::Msg(event) = event {
-                compositor.borrow().dispatch(&event, app);
+                compositor_event_reader.borrow().dispatch(&event, app);
             }
         })
         .map_err(|e| anyhow::anyhow!("Error registering compositor channel: {}", e))?;
@@ -52,7 +54,9 @@ pub fn build_common_loop(
         .handle()
         .insert_source(Timer::immediate(), move |_, _, _| {
             if let Some(tx) = tx.take()
-                && let Err(e) = compositor_for_spawn.borrow_mut().spawn_event_reader(tx)
+                && let Err(e) = compositor_event_reader_for_spawn
+                    .borrow_mut()
+                    .spawn(tx, compositor.clone())
             {
                 error!("{e:#}");
             }
@@ -89,12 +93,19 @@ pub fn run(
         mut app,
         queue,
         compositor,
+        compositor_event_reader,
         channel,
         ping_source: _,
         error_ping_source,
     } = bootstrap_output;
-    let mut event_loop =
-        build_common_loop(&mut app, queue, compositor, channel, error_ping_source)?;
+    let mut event_loop = build_common_loop(
+        &mut app,
+        queue,
+        compositor,
+        compositor_event_reader,
+        channel,
+        error_ping_source,
+    )?;
 
     let on_frame = on_frame(args.use_hwdec);
     event_loop

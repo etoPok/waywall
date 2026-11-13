@@ -28,6 +28,7 @@ fn main() -> anyhow::Result<()> {
         mut app,
         queue,
         compositor,
+        compositor_event_reader,
         channel,
         ping_source: _,
         error_ping_source,
@@ -36,6 +37,7 @@ fn main() -> anyhow::Result<()> {
         &mut app,
         queue,
         compositor,
+        compositor_event_reader,
         channel,
         error_ping_source,
     )

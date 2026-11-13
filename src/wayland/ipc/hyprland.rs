@@ -1,20 +1,22 @@
 use std::io::{BufRead, BufReader};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use super::request::{Framing, request_json, wait_for_shutdown};
+use crate::occlusion::OcclusionTracker;
 use crate::wayland::ipc::{
-    Compositor, CompositorEvent, CompositorEventKind, CompositorEventReader, CompositorHandler,
-    wait_for_shutdown,
+    Compositor, CompositorEvent, OutputId, ReadEvent, ToplevelId, WorkspaceId,
 };
 use anyhow::Context;
 
+type Client = (ToplevelId, bool, WorkspaceId, i64);
+
+#[derive(Clone, Debug)]
 pub struct Hyprland {
-    event_socket: PathBuf,
-    request_socket: PathBuf,
-    handlers: std::collections::HashMap<CompositorEventKind, Vec<CompositorHandler>>,
-    reader: Option<CompositorEventReader>,
+    event_socket_path: PathBuf,
+    request_socket_path: PathBuf,
 }
 
 impl Hyprland {
@@ -22,18 +24,16 @@ impl Hyprland {
         let (request_socket, event_socket) = Self::sockets_from_env()?;
 
         let this = Self {
-            request_socket,
-            event_socket,
-            handlers: Default::default(),
-            reader: None,
+            request_socket_path: request_socket,
+            event_socket_path: event_socket,
         };
 
         this.active_workspace()
             .context("Hyprland is reachable but did not answer a request")?;
-        let probe = UnixStream::connect(&this.event_socket).with_context(|| {
+        let probe = UnixStream::connect(&this.event_socket_path).with_context(|| {
             format!(
                 "Cannot connect to Hyprland event socket {:?}",
-                this.event_socket
+                this.event_socket_path
             )
         })?;
         drop(probe);
@@ -56,14 +56,136 @@ impl Hyprland {
         Ok((request_socket, event_socket))
     }
 
+    pub fn parse_event(line: &str) -> Option<CompositorEvent> {
+        let (name, data) = line.split_once(">>")?;
+        match name {
+            "monitoradded" => {
+                let id = data.to_string();
+                Some(CompositorEvent::OutputAdded(id))
+            }
+            "monitorremoved" => {
+                let id = data.to_string();
+                Some(CompositorEvent::OutputRemoved(id))
+            }
+            "focusedmon" => {
+                let (o_id, w_id) = data.split_once(',')?;
+                let w_id: i64 = w_id.parse().ok()?;
+                Some(CompositorEvent::OutputFocused(o_id.to_string(), w_id))
+            }
+
+            "workspace" => {
+                let id: i64 = data.parse().ok()?;
+                Some(CompositorEvent::ActiveWorkspace(id))
+            }
+            "createworkspacev2" => {
+                let (id, _) = data.split_once(',')?;
+                let id: i64 = id.parse().ok()?;
+                Some(CompositorEvent::WorkspaceCreated(id))
+            }
+            "destroyworkspacev2" => {
+                let (id, _) = data.split_once(',')?;
+                let id: i64 = id.parse().ok()?;
+                Some(CompositorEvent::WorkspaceDestroyed(id))
+            }
+            "moveworkspace" => {
+                let (w_id, o_id) = data.split_once(',')?;
+                let w_id: i64 = w_id.parse().ok()?;
+                Some(CompositorEvent::WorkspaceMoved(w_id, o_id.to_string()))
+            }
+
+            "openwindow" => {
+                let id = data.split_once(',')?.0;
+                let id = id.strip_prefix("0x").unwrap_or(id);
+                Some(CompositorEvent::OpenToplevel(id.to_string()))
+            }
+            "activewindowv2" => {
+                let data = data.strip_prefix("0x").unwrap_or(data);
+                Some(CompositorEvent::ActiveToplevel(data.to_string()))
+            }
+            "closewindow" => {
+                let data = data.strip_prefix("0x").unwrap_or(data);
+                Some(CompositorEvent::CloseToplevel(data.to_string()))
+            }
+            "movewindowv2" => {
+                let (t_id, w_id) = data.split_once(',')?;
+                let w_id = w_id.split_once(',')?.0;
+                let w_id: i64 = w_id.parse().ok()?;
+                Some(CompositorEvent::ToplevelMoved(t_id.to_string(), w_id))
+            }
+            "fullscreen" => match data {
+                "1" => Some(CompositorEvent::Fullscreen(true)),
+                "0" => Some(CompositorEvent::Fullscreen(false)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn occlusion_snapshot<C: Compositor>(compositor: C) -> anyhow::Result<OcclusionTracker<C>> {
+        let clients = Self::clients(compositor.request_socket_path())?;
+        let outputs = compositor.outputs()?;
+        let workspaces = compositor.workspaces()?;
+        let active_toplevel = compositor.active_toplevel()?;
+        let active_output = outputs
+            .iter()
+            .find(|o| o.3)
+            .context("Failed to find active_output")?;
+
+        OcclusionTracker::new(
+            compositor,
+            active_output.1.clone(),
+            active_output.2, // active workspace
+            active_toplevel,
+            clients.as_slice(),
+            workspaces.as_slice(),
+            outputs.as_slice(),
+        )
+    }
+
+    fn clients(request_socket_path: &Path) -> anyhow::Result<Vec<Client>> {
+        let v = request_json(request_socket_path, b"j/clients", Framing::UntilEof)?;
+        v.as_array()
+            .context("Hyprland clients response is not an array")?
+            .iter()
+            .map(|client| -> anyhow::Result<_> {
+                let address = client["address"]
+                    .as_str()
+                    .context("missing client address")?;
+                let address = address.strip_prefix("0x").unwrap_or(address);
+                let fullscreen = client["fullscreen"]
+                    .as_u64()
+                    .context("missing client fullscreen")?;
+                let is_fullscreen = fullscreen >= 2;
+                let workspace = client["workspace"]["id"]
+                    .as_i64()
+                    .context("missing client workspace id")?;
+                let output = client["monitor"]
+                    .as_i64()
+                    .context("missing client monitor")?;
+
+                Ok((address.to_string(), is_fullscreen, workspace, output))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()
+    }
+}
+
+impl Compositor for Hyprland {
+    fn request_socket_path(&self) -> &std::path::Path {
+        &self.request_socket_path
+    }
+
+    fn event_socket_path(&self) -> &std::path::Path {
+        &self.event_socket_path
+    }
+
     fn reader_loop(
-        path: PathBuf,
-        tx: calloop::channel::Sender<CompositorEvent>,
+        &self,
+        tx: calloop::channel::Sender<ReadEvent>,
         shutdown: Arc<AtomicBool>,
         stream: Arc<Mutex<Option<UnixStream>>>,
     ) {
         while !shutdown.load(Ordering::Acquire) {
-            match UnixStream::connect(&path) {
+            match UnixStream::connect(&self.event_socket_path) {
                 Ok(s) => {
                     let clone = match s.try_clone() {
                         Ok(clone) => clone,
@@ -79,6 +201,21 @@ impl Hyprland {
                         break;
                     }
 
+                    let mut occlusion_tracker = match Self::occlusion_snapshot(self.clone()) {
+                        Ok(snapshot) => {
+                            tracing::info!("{:?}", snapshot);
+                            snapshot
+                        }
+                        Err(e) => {
+                            *stream.lock().unwrap() = None;
+                            drop(stream);
+                            tracing::error!("Hyprland initial state snapshot failed: {e:#}");
+                            // ignore error since the main loop must close anyway
+                            let _ = tx.send(ReadEvent::ReaderKilled(()));
+                            break;
+                        }
+                    };
+
                     let reader = BufReader::new(s);
                     for line in reader.lines() {
                         if shutdown.load(Ordering::Acquire) {
@@ -93,11 +230,22 @@ impl Hyprland {
                         if trimmed.is_empty() {
                             continue;
                         }
-                        if let Some(event) = Self::parse_event(trimmed)
-                            && tx.send(event).is_err()
-                        {
-                            *stream.lock().unwrap() = None;
-                            return; // main loop dead
+                        if let Some(event) = Self::parse_event(trimmed) {
+                            if let Err(e) = occlusion_tracker.handle_event(&event) {
+                                tracing::error!("{e:#}");
+                                *stream.lock().unwrap() = None;
+                                wait_for_shutdown(&shutdown);
+                                break;
+                            }
+                            if tx
+                                .send(ReadEvent::StatusUpdated(
+                                    occlusion_tracker.get_output_status(),
+                                ))
+                                .is_err()
+                            {
+                                *stream.lock().unwrap() = None;
+                                return; // main loop dead
+                            }
                         }
                     }
 
@@ -116,71 +264,78 @@ impl Hyprland {
         }
     }
 
-    pub fn parse_event(line: &str) -> Option<CompositorEvent> {
-        let (name, data) = line.split_once(">>")?;
-        match name {
-            "workspace" => {
-                let ws: i64 = data.parse().ok()?;
-                Some(CompositorEvent::WorkspaceChanged(ws))
-            }
-            "activewindow" => Some(CompositorEvent::ActiveWindowChanged(data.to_string())),
-            _ => None,
-        }
-    }
-}
-
-impl Compositor for Hyprland {
-    fn subscribe(&mut self, event_type: CompositorEventKind, handler: CompositorHandler) {
-        self.handlers.entry(event_type).or_default().push(handler);
-    }
-
-    fn spawn_event_reader(
-        &mut self,
-        tx: calloop::channel::Sender<CompositorEvent>,
-    ) -> anyhow::Result<()> {
-        if self.reader.is_some() {
-            anyhow::bail!("Hyprland event reader is already running");
-        }
-
-        let path = self.event_socket.clone();
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let stream = Arc::new(Mutex::new(None));
-
-        let shutdown_for_thread = Arc::clone(&shutdown);
-        let stream_for_thread = Arc::clone(&stream);
-        let thread = std::thread::Builder::new()
-            .name("hyprland-events".into())
-            .spawn(move || {
-                Self::reader_loop(path, tx, shutdown_for_thread, stream_for_thread);
-            })?;
-
-        self.reader = Some(CompositorEventReader {
-            shutdown,
-            stream,
-            thread: Some(thread),
-        });
-
-        Ok(())
-    }
-
-    fn dispatch(&self, event: &CompositorEvent, app: &mut crate::app::state::App) {
-        let event_type = event.event_type();
-        if let Some(handlers) = self.handlers.get(&event_type) {
-            for handler in handlers {
-                handler(app, event);
-            }
-        }
-    }
-
-    fn active_workspace(&self) -> anyhow::Result<i64> {
-        use std::io::{Read, Write};
-        let mut stream = UnixStream::connect(&self.request_socket)?;
-        stream.write_all(b"j/activeworkspace")?;
-        let _ = stream.shutdown(std::net::Shutdown::Write);
-        let mut buf = String::new();
-        stream.read_to_string(&mut buf)?;
-
-        let v: serde_json::Value = serde_json::from_str(&buf)?;
+    fn active_workspace(&self) -> anyhow::Result<WorkspaceId> {
+        let v = request_json(
+            self.request_socket_path(),
+            b"j/activeworkspace",
+            Framing::UntilEof,
+        )?;
         v["id"].as_i64().context("missing workspace id")
+    }
+
+    fn active_output(&self) -> anyhow::Result<String> {
+        let v = request_json(&self.request_socket_path, b"j/monitors", Framing::UntilEof)?;
+        let active_monitor = v
+            .as_array()
+            .context("Hyprland monitors response is not an array")?
+            .iter()
+            .find(|m| m["focused"].as_bool().unwrap_or_default())
+            .context("Active output not found")?;
+
+        Ok(active_monitor["name"]
+            .as_str()
+            .context("missing monitor name")?
+            .to_string())
+    }
+
+    fn active_toplevel(&self) -> anyhow::Result<Option<ToplevelId>> {
+        let v = request_json(
+            &self.request_socket_path,
+            b"j/activewindow",
+            Framing::UntilEof,
+        )?;
+        let Some(address) = v["address"].as_str() else {
+            return Ok(None);
+        };
+
+        Ok(Some(
+            address.strip_prefix("0x").unwrap_or(address).to_string(),
+        ))
+    }
+
+    fn outputs(&self) -> anyhow::Result<Vec<(i64, String, WorkspaceId, bool)>> {
+        let v = request_json(&self.request_socket_path, b"j/monitors", Framing::UntilEof)?;
+        v.as_array()
+            .context("Hyprland monitors response is not an array")?
+            .iter()
+            .map(|m| {
+                let id = m["id"].as_i64().context("missing output id")?;
+                let name = m["name"].as_str().context("missing output name")?;
+                let focused = m["focused"].as_bool().context("missing output focused")?;
+                let acitve_workspace = m["activeWorkspace"]["id"]
+                    .as_i64()
+                    .context("missing output active workspace id")?;
+                Ok((id, name.to_string(), acitve_workspace, focused))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()
+    }
+
+    fn workspaces(&self) -> anyhow::Result<Vec<(WorkspaceId, OutputId)>> {
+        let v = request_json(
+            self.request_socket_path(),
+            b"j/workspaces",
+            Framing::UntilEof,
+        )?;
+        v.as_array()
+            .context("Hyprland monitors response is not an array")?
+            .iter()
+            .map(|m| {
+                let id = m["id"].as_i64().context("missing workspace id")?;
+                let output = m["monitor"]
+                    .as_str()
+                    .context("missing workspace output name")?;
+                Ok((id, output.to_string()))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()
     }
 }

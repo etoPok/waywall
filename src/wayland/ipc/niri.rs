@@ -1,30 +1,23 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::wayland::ipc::{
-    Compositor, CompositorEvent, CompositorEventKind, CompositorEventReader, CompositorHandler,
-    wait_for_shutdown,
-};
+use crate::wayland::ipc::request::wait_for_shutdown;
+use crate::wayland::ipc::{Compositor, CompositorEvent, ReadEvent};
 use anyhow::Context;
 
+#[derive(Clone)]
 pub struct Niri {
     socket_dir: PathBuf,
-    handlers: std::collections::HashMap<CompositorEventKind, Vec<CompositorHandler>>,
-    reader: Option<CompositorEventReader>,
 }
 
 impl Niri {
     pub fn connect() -> anyhow::Result<Self> {
         let socket_dir = Self::socket_from_env()?;
-        let this = Self {
-            socket_dir,
-            handlers: Default::default(),
-            reader: None,
-        };
+        let this = Self { socket_dir };
 
         this.active_workspace()
             .context("Niri is reachable but did not answer a request")?;
@@ -47,15 +40,41 @@ impl Niri {
         Ok(dir)
     }
 
+    pub fn parse_event(line: &str) -> Option<CompositorEvent> {
+        let event = serde_json::from_str::<niri_ipc::Event>(line)
+            .context("Failed to parse Niri event from raw line")
+            .ok()?;
+
+        match event {
+            niri_ipc::Event::WorkspaceActivated { id, focused: _ } => {
+                Some(CompositorEvent::ActiveWorkspace(id as i64))
+            }
+            _ => {
+                tracing::info!("Unexpected Niri Event: {}", line);
+                None
+            }
+        }
+    }
+}
+
+impl Compositor for Niri {
+    fn request_socket_path(&self) -> &std::path::Path {
+        &self.socket_dir
+    }
+
+    fn event_socket_path(&self) -> &std::path::Path {
+        &self.socket_dir
+    }
+
     fn reader_loop(
-        path: PathBuf,
-        tx: calloop::channel::Sender<CompositorEvent>,
+        &self,
+        tx: calloop::channel::Sender<ReadEvent>,
         shutdown: Arc<AtomicBool>,
         stream: Arc<Mutex<Option<UnixStream>>>,
     ) {
         fn connect_and_read(
-            path: &PathBuf,
-            tx: &calloop::channel::Sender<CompositorEvent>,
+            path: &Path,
+            tx: &calloop::channel::Sender<ReadEvent>,
             shutdown: &Arc<AtomicBool>,
             stream: &Arc<Mutex<Option<UnixStream>>>,
         ) -> Result<(), anyhow::Error> {
@@ -93,7 +112,7 @@ impl Niri {
                             }
                             Ok(_) => match Niri::parse_event(&event_buf) {
                                 Some(event) => {
-                                    if tx.send(event).is_err() {
+                                    if tx.send(ReadEvent::CompositorEvent(event)).is_err() {
                                         *stream.lock().unwrap() = None;
                                         return Ok(());
                                     }
@@ -124,7 +143,7 @@ impl Niri {
         }
 
         while !shutdown.load(Ordering::Acquire) {
-            match connect_and_read(&path, &tx, &shutdown, &stream) {
+            match connect_and_read(&self.socket_dir, &tx, &shutdown, &stream) {
                 Ok(()) => {
                     if !shutdown.load(Ordering::Acquire) {
                         wait_for_shutdown(&shutdown);
@@ -139,63 +158,8 @@ impl Niri {
                 }
             }
         }
-    }
 
-    pub fn parse_event(line: &str) -> Option<CompositorEvent> {
-        let event = serde_json::from_str::<niri_ipc::Event>(line)
-            .context("Failed to parse Niri event from raw line")
-            .ok()?;
-
-        match event {
-            niri_ipc::Event::WorkspaceActivated { id, focused: _ } => {
-                Some(CompositorEvent::WorkspaceChanged(id as i64))
-            }
-            _ => None,
-        }
-    }
-}
-
-impl Compositor for Niri {
-    fn subscribe(&mut self, event_type: CompositorEventKind, handler: CompositorHandler) {
-        self.handlers.entry(event_type).or_default().push(handler);
-    }
-
-    fn spawn_event_reader(
-        &mut self,
-        tx: calloop::channel::Sender<CompositorEvent>,
-    ) -> anyhow::Result<()> {
-        if self.reader.is_some() {
-            anyhow::bail!("Niri event reader is already running");
-        }
-
-        let path = self.socket_dir.clone();
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let stream = Arc::new(Mutex::new(None));
-
-        let shutdown_for_thread = Arc::clone(&shutdown);
-        let stream_for_thread = Arc::clone(&stream);
-        let thread = std::thread::Builder::new()
-            .name("niri-events".into())
-            .spawn(move || {
-                Self::reader_loop(path, tx, shutdown_for_thread, stream_for_thread);
-            })?;
-
-        self.reader = Some(CompositorEventReader {
-            shutdown,
-            stream,
-            thread: Some(thread),
-        });
-
-        Ok(())
-    }
-
-    fn dispatch(&self, event: &CompositorEvent, app: &mut crate::app::state::App) {
-        let event_type = event.event_type();
-        if let Some(handlers) = self.handlers.get(&event_type) {
-            for handler in handlers {
-                handler(app, event);
-            }
-        }
+        let _ = tx.send(ReadEvent::ReaderKilled(()));
     }
 
     fn active_workspace(&self) -> anyhow::Result<i64> {

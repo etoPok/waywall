@@ -7,6 +7,7 @@ pub mod drm_frame;
 pub mod drm_node;
 pub mod frame_queue;
 pub mod logging;
+pub mod occlusion;
 pub mod render;
 pub mod runtime;
 pub mod shader;
