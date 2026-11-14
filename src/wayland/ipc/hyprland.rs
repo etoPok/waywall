@@ -240,6 +240,7 @@ impl Compositor for Hyprland {
                             if tx
                                 .send(ReadEvent::StatusUpdated(
                                     occlusion_tracker.get_output_status(),
+                                    CompositorEvent::event_type(&event),
                                 ))
                                 .is_err()
                             {
@@ -337,5 +338,313 @@ impl Compositor for Hyprland {
                 Ok((id, output.to_string()))
             })
             .collect::<anyhow::Result<Vec<_>>>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wayland::ipc::{CompositorEventKind, CompositorEventReader, ReadEvent};
+
+    fn hyprland_env_available() -> bool {
+        if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
+            eprintln!("skipping: HYPRLAND_INSTANCE_SIGNATURE is not set");
+            return false;
+        }
+
+        true
+    }
+
+    fn wayland_env_available() -> bool {
+        if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+            eprintln!("skipping: WAYLAND_DISPLAY is not set");
+            return false;
+        }
+
+        true
+    }
+
+    #[test]
+    fn parses_workspace_event() {
+        assert!(matches!(
+            Hyprland::parse_event("workspace>>3"),
+            Some(CompositorEvent::ActiveWorkspace(3))
+        ));
+    }
+
+    #[test]
+    fn parses_monitor_added_event() {
+        assert!(matches!(
+            Hyprland::parse_event("monitoradded>>eDP-1"),
+            Some(CompositorEvent::OutputAdded(ref id)) if id == "eDP-1"
+        ));
+    }
+
+    #[test]
+    fn parses_monitor_removed_event() {
+        assert!(matches!(
+            Hyprland::parse_event("monitorremoved>>eDP-1"),
+            Some(CompositorEvent::OutputRemoved(ref id)) if id == "eDP-1"
+        ));
+    }
+
+    #[test]
+    fn parses_focused_monitor_event() {
+        assert!(matches!(
+            Hyprland::parse_event("focusedmon>>eDP-1,3"),
+            Some(CompositorEvent::OutputFocused(ref id, 3)) if id == "eDP-1"
+        ));
+    }
+
+    #[test]
+    fn parses_create_workspace_v2_event() {
+        assert!(matches!(
+            Hyprland::parse_event("createworkspacev2>>-98,special:hidden:2"),
+            Some(CompositorEvent::WorkspaceCreated(-98))
+        ));
+    }
+
+    #[test]
+    fn parses_destroy_workspace_v2_event() {
+        assert!(matches!(
+            Hyprland::parse_event("destroyworkspacev2>>-98,special:hidden:2"),
+            Some(CompositorEvent::WorkspaceDestroyed(-98))
+        ));
+    }
+
+    #[test]
+    fn parses_move_workspace_event() {
+        assert!(matches!(
+            Hyprland::parse_event("moveworkspace>>3,eDP-1"),
+            Some(CompositorEvent::WorkspaceMoved(3, ref id)) if id == "eDP-1"
+        ));
+    }
+
+    #[test]
+    fn parses_open_window_event() {
+        assert!(matches!(
+            Hyprland::parse_event("openwindow>>0x1234,1"),
+            Some(CompositorEvent::OpenToplevel(ref id)) if id == "1234"
+        ));
+    }
+
+    #[test]
+    fn parses_active_window_v2_event() {
+        assert!(matches!(
+            Hyprland::parse_event("activewindowv2>>55952ac54350"),
+            Some(CompositorEvent::ActiveToplevel(ref id)) if id == "55952ac54350"
+        ));
+    }
+
+    #[test]
+    fn parses_close_window_event() {
+        assert!(matches!(
+            Hyprland::parse_event("closewindow>>0x1234"),
+            Some(CompositorEvent::CloseToplevel(ref id)) if id == "1234"
+        ));
+    }
+
+    #[test]
+    fn parses_move_window_v2_event() {
+        assert!(matches!(
+            Hyprland::parse_event("movewindowv2>>55952ac54350,-98,special:hidden:2"),
+            Some(CompositorEvent::ToplevelMoved(ref id, -98)) if id == "55952ac54350"
+        ));
+    }
+
+    #[test]
+    fn parses_fullscreen_event() {
+        assert!(matches!(
+            Hyprland::parse_event("fullscreen>>1"),
+            Some(CompositorEvent::Fullscreen(true))
+        ));
+        assert!(matches!(
+            Hyprland::parse_event("fullscreen>>0"),
+            Some(CompositorEvent::Fullscreen(false))
+        ));
+    }
+
+    #[test]
+    fn ignores_unknown_event() {
+        assert!(Hyprland::parse_event("monitoradded").is_none());
+        assert!(Hyprland::parse_event("fullscreen>>2").is_none());
+    }
+
+    #[test]
+    fn ignores_malformed_event() {
+        assert!(Hyprland::parse_event("no-separator-here").is_none());
+        assert!(Hyprland::parse_event("workspace>>abc").is_none());
+        assert!(Hyprland::parse_event("focusedmon>>eDP-1").is_none());
+        assert!(Hyprland::parse_event("movewindowv2>>0x1,3").is_none());
+    }
+
+    #[test]
+    #[ignore = "requires active Hyprland session"]
+    fn active_workspace_request_returns_workspace_id() {
+        if !hyprland_env_available() {
+            return;
+        }
+
+        let hyprland = Hyprland::connect().expect("Hyprland::connect() failed");
+        let id = hyprland
+            .active_workspace()
+            .expect("active_workspace request failed");
+        assert_ne!(id, 0, "active workspace id should not be 0");
+    }
+
+    #[test]
+    #[ignore = "requires active Hyprland session"]
+    fn active_output_request_returns_output_name() {
+        if !hyprland_env_available() {
+            return;
+        }
+
+        let hyprland = Hyprland::connect().expect("Hyprland::connect() failed");
+        let name = hyprland
+            .active_output()
+            .expect("active_output request failed");
+        assert!(!name.is_empty(), "active output name should not be empty");
+    }
+
+    #[test]
+    #[ignore = "requires active Hyprland session"]
+    fn active_toplevel_request_succeeds() {
+        if !hyprland_env_available() {
+            return;
+        }
+
+        let hyprland = Hyprland::connect().expect("Hyprland::connect() failed");
+        let _toplevel = hyprland
+            .active_toplevel()
+            .expect("active_toplevel request failed");
+    }
+
+    #[test]
+    #[ignore = "requires active Hyprland session"]
+    fn outputs_request_returns_outputs() {
+        if !hyprland_env_available() {
+            return;
+        }
+
+        let hyprland = Hyprland::connect().expect("Hyprland::connect() failed");
+        let outputs = hyprland.outputs().expect("outputs request failed");
+        assert!(!outputs.is_empty(), "expected at least one monitor");
+        assert!(
+            outputs.iter().filter(|o| o.3).count() <= 1,
+            "at most one monitor should be focused"
+        );
+        for (_, name, _, _) in &outputs {
+            assert!(!name.is_empty(), "monitor name should not be empty");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires active Hyprland session"]
+    fn workspaces_request_returns_workspaces() {
+        if !hyprland_env_available() {
+            return;
+        }
+
+        let hyprland = Hyprland::connect().expect("Hyprland::connect() failed");
+        let workspaces = hyprland.workspaces().expect("workspaces request failed");
+        assert!(!workspaces.is_empty(), "expected at least one workspace");
+        for (_, output) in &workspaces {
+            assert!(!output.is_empty(), "workspace output should not be empty");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires user interaction"]
+    fn workspace_changed_event_reaches_subscribed_handler() {
+        if !hyprland_env_available() || !wayland_env_available() {
+            return;
+        }
+
+        let hyprland = Hyprland::connect().expect("Hyprland::connect() failed");
+        let mut app = build_test_app().expect("failed to build test App");
+
+        let mut compositor_event_reader = CompositorEventReader::new();
+        compositor_event_reader.add_dispatcher(Box::new(move |app, event| {
+            if let ReadEvent::StatusUpdated(_, e) = event
+                && *e == CompositorEventKind::ActiveWorkspace
+            {
+                app.stop_main_loop();
+            }
+        }));
+        let (tx, rx) = calloop::channel::channel::<ReadEvent>();
+
+        let mut event_loop: calloop::EventLoop<'static, crate::app::state::App> =
+            calloop::EventLoop::try_new().expect("failed to create event loop");
+        app.main_loop_signal = Some(event_loop.get_signal());
+
+        let compositor_event_reader =
+            std::rc::Rc::new(std::cell::RefCell::new(compositor_event_reader));
+        let compositor_event_reader_for_spawn = compositor_event_reader.clone();
+        let mut tx = Some(tx);
+        event_loop
+            .handle()
+            .insert_source(calloop::timer::Timer::immediate(), move |_, _, app| {
+                if let Some(tx) = tx.take()
+                    && let Err(e) = compositor_event_reader_for_spawn
+                        .borrow_mut()
+                        .spawn(tx, hyprland.clone())
+                {
+                    eprintln!("{e:#}");
+                    app.stop_main_loop();
+                }
+                calloop::timer::TimeoutAction::Drop
+            })
+            .expect("failed to insert spawn source");
+
+        event_loop
+            .handle()
+            .insert_source(rx, move |event, _, state| {
+                if let calloop::channel::Event::Msg(event) = event {
+                    compositor_event_reader.borrow().dispatch(&event, state);
+                }
+            })
+            .expect("failed to insert channel source");
+
+        event_loop
+            .handle()
+            .insert_source(
+                calloop::timer::Timer::from_duration(std::time::Duration::from_secs(10)),
+                move |_, _, app| {
+                    eprintln!("timeout: no ActiveWorkspace event received");
+                    app.stop_main_loop();
+                    calloop::timer::TimeoutAction::Drop
+                },
+            )
+            .expect("failed to insert timeout timer");
+
+        println!("Switch workspace now. Waiting 10s...");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+
+        event_loop
+            .run(None, &mut app, |_| {})
+            .expect("event loop failed");
+
+        drop(app);
+    }
+
+    fn build_test_app() -> anyhow::Result<crate::app::state::App> {
+        let (conn, globals, queue) = crate::wayland::connection::WlConnection::connect()?;
+        let (compositor, layer_shell) =
+            crate::wayland::connection::WlConnection::bind_required_protocol_extensions(
+                &globals, &queue,
+            )?;
+        let wl_conn = crate::wayland::connection::WlConnection::new(
+            conn,
+            globals,
+            queue.handle(),
+            compositor,
+            layer_shell,
+        );
+
+        Ok(crate::app::state::App::new(
+            wl_conn,
+            crate::decoder::Decoder::new(),
+            crate::timing::Timing::new(),
+        ))
     }
 }

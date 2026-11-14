@@ -99,8 +99,10 @@ impl Drop for CompositorEventReader {
 #[derive(Debug, Clone)]
 pub enum ReadEvent {
     ReaderKilled(()),
-    CompositorEvent(CompositorEvent),
-    StatusUpdated(std::collections::HashMap<OutputId, bool>),
+    StatusUpdated(
+        std::collections::HashMap<OutputId, bool>,
+        CompositorEventKind,
+    ),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

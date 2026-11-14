@@ -158,7 +158,7 @@ fn setup_compositor() -> Result<(AnyCompositor, CompositorEventReader, Composito
 
     let mut compositor_event_reader = CompositorEventReader::new();
     compositor_event_reader.add_dispatcher(Box::new(|app, event| {
-        if let ReadEvent::StatusUpdated(status) = event {
+        if let ReadEvent::StatusUpdated(status, _) = event {
             tracing::info!("{:?}", status);
         }
         if let ReadEvent::ReaderKilled(_) = event {

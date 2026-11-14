@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -112,7 +113,13 @@ impl Compositor for Niri {
                             }
                             Ok(_) => match Niri::parse_event(&event_buf) {
                                 Some(event) => {
-                                    if tx.send(ReadEvent::CompositorEvent(event)).is_err() {
+                                    if tx
+                                        .send(ReadEvent::StatusUpdated(
+                                            HashMap::default(),
+                                            CompositorEvent::event_type(&event),
+                                        ))
+                                        .is_err()
+                                    {
                                         *stream.lock().unwrap() = None;
                                         return Ok(());
                                     }
