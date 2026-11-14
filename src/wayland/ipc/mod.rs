@@ -96,13 +96,18 @@ impl Drop for CompositorEventReader {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OutputStatusChange {
+    Set { output: OutputId, locked: bool },
+    Removed { output: OutputId },
+}
+
 #[derive(Debug, Clone)]
 pub enum ReadEvent {
     ReaderKilled(()),
-    StatusUpdated(
-        std::collections::HashMap<OutputId, bool>,
-        CompositorEventKind,
-    ),
+    CompositorEvent(CompositorEventKind),
+    OutputStatusUpdated(OutputStatusChange),
+    OutputStatus(Vec<(OutputId, bool)>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

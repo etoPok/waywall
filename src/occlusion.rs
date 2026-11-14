@@ -2,7 +2,11 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Ok};
 
-use crate::wayland::ipc::{Compositor, CompositorEvent, OutputId, ToplevelId, WorkspaceId};
+use crate::wayland::ipc::{
+    Compositor, CompositorEvent, OutputId, OutputStatusChange, ToplevelId, WorkspaceId,
+};
+
+const MAX_OUTPUT_STATUS_CHANGES: usize = 2;
 
 #[derive(Clone, Debug)]
 pub struct Toplevel {
@@ -48,13 +52,15 @@ pub struct Output {
 #[derive(Clone, Debug, Default)]
 pub struct OcclusionTracker<C: Compositor> {
     compositor: C,
-    active_output: String,
+    active_output: OutputId,
     active_workspace: WorkspaceId,
     active_toplevel: Option<ToplevelId>,
 
     toplevels: HashMap<ToplevelId, Toplevel>,
     workspaces: HashMap<WorkspaceId, Workspace>,
     outputs: HashMap<OutputId, Output>,
+
+    pending_status: [Option<OutputStatusChange>; MAX_OUTPUT_STATUS_CHANGES],
 }
 
 impl<C: Compositor> OcclusionTracker<C> {
@@ -98,6 +104,7 @@ impl<C: Compositor> OcclusionTracker<C> {
                     ))
                 })
                 .collect::<anyhow::Result<HashMap<_, _>>>()?,
+            pending_status: std::array::from_fn(|_| None),
         })
     }
 
@@ -138,14 +145,8 @@ impl<C: Compositor> OcclusionTracker<C> {
             )
         }
         self.toplevels.remove(id);
-        let active_output = self
-            .outputs
-            .get_mut(&self.active_output)
-            .context("OcclusionTracker.close_toplevel: the active output does not exist")?;
-        active_output.lock = self
-            .toplevels
-            .values()
-            .any(|t| t.workspace == active_output.active_workspace && t.fullscreen);
+        let active_output_id = self.active_output.clone();
+        self.recompute_lock(&active_output_id);
         Ok(())
     }
 
@@ -177,20 +178,20 @@ impl<C: Compositor> OcclusionTracker<C> {
                 "OcclusionTracker.fullscreen: the workspace of the active toplevel does not exist"
             )
         }
-        let active_output = self
-            .outputs
-            .get_mut(&self.active_output)
-            .context("OcclusionTracker.fullscreen: the active output does not exist")?;
-        if active_output.active_workspace != active_toplevel.workspace {
-            anyhow::bail!(
-                "OcclusionTracker.fullscreen: the active toplevel is not in the active workspace of the active output"
-            )
+        {
+            let active_output = self
+                .outputs
+                .get(&self.active_output)
+                .context("OcclusionTracker.fullscreen: the active output does not exist")?;
+            if active_output.active_workspace != active_toplevel.workspace {
+                anyhow::bail!(
+                    "OcclusionTracker.fullscreen: the active toplevel is not in the active workspace of the active output"
+                )
+            }
         }
         active_toplevel.fullscreen = fullscreen;
-        active_output.lock = self
-            .toplevels
-            .values()
-            .any(|t| t.workspace == active_output.active_workspace && t.fullscreen);
+        let active_output_id = self.active_output.clone();
+        self.recompute_lock(&active_output_id);
         Ok(())
     }
 
@@ -227,41 +228,29 @@ impl<C: Compositor> OcclusionTracker<C> {
                 "OcclusionTracker.move_toplevel: the toplevel to move already exists in the target workspace"
             )
         }
+        let current_output_id = current_workspace.output.clone();
+        let target_output_id = target_workspace.output.clone();
         self.toplevels.get_mut(toplevel_id).unwrap().workspace = *target_workspace_id;
-        if current_workspace.output != target_workspace.output {
-            {
-                let current_output = self.outputs.get_mut(&current_workspace.output).context(
-                    "OcclusionTracker.move_toplevel: the output of the current workspace does not exist",
-                )?;
-                if current_output.active_workspace == current_workspace.id {
-                    current_output.lock = self
-                        .toplevels
-                        .values()
-                        .any(|t| current_output.active_workspace == t.workspace && t.fullscreen);
-                }
+        if current_output_id != target_output_id {
+            if !self.outputs.contains_key(&current_output_id) {
+                anyhow::bail!(
+                    "OcclusionTracker.move_toplevel: the output of the current workspace does not exist"
+                );
             }
-            let target_output = self.outputs.get_mut(&target_workspace.output).context(
-                "OcclusionTracker.move_toplevel: the output of the target workspace does not exist",
-            )?;
-            if target_output.active_workspace == target_workspace.id {
-                target_output.lock = self
-                    .toplevels
-                    .values()
-                    .any(|t| target_output.active_workspace == t.workspace && t.fullscreen);
+            if !self.outputs.contains_key(&target_output_id) {
+                anyhow::bail!(
+                    "OcclusionTracker.move_toplevel: the output of the target workspace does not exist"
+                );
             }
+            self.recompute_lock(&current_output_id);
+            self.recompute_lock(&target_output_id);
         } else {
-            let output = self.outputs.get_mut(&target_workspace.output).context(
-                "OcclusionTracker.move_toplevel: the output shared by the current and target workspaces does not exist",
-            )?;
-            // Check that both workspaces belong to the same output.
-            if output.active_workspace == current_workspace.id
-                || output.active_workspace == target_workspace.id
-            {
-                output.lock = self
-                    .toplevels
-                    .values()
-                    .any(|t| output.active_workspace == t.workspace && t.fullscreen);
+            if !self.outputs.contains_key(&target_output_id) {
+                anyhow::bail!(
+                    "OcclusionTracker.move_toplevel: the output shared by the current and target workspaces does not exist"
+                );
             }
+            self.recompute_lock(&target_output_id);
         }
         Ok(())
     }
@@ -297,21 +286,21 @@ impl<C: Compositor> OcclusionTracker<C> {
         let workspace_to_active = self.workspaces.get(workspace_id).context(
             "OcclusionTracker.active_workspace: the workspace to activate does not exist",
         )?;
-        let active_output = self
-            .outputs
-            .get_mut(&self.active_output)
-            .context("OcclusionTracker.active_workspace: the active output does not exist")?;
-        if active_output.name != workspace_to_active.output {
-            anyhow::bail!(
-                "OcclusionTracker.active_workspace: the workspace to activate does not exist on the active output"
-            )
+        {
+            let active_output = self
+                .outputs
+                .get_mut(&self.active_output)
+                .context("OcclusionTracker.active_workspace: the active output does not exist")?;
+            if active_output.name != workspace_to_active.output {
+                anyhow::bail!(
+                    "OcclusionTracker.active_workspace: the workspace to activate does not exist on the active output"
+                )
+            }
+            self.active_workspace = workspace_to_active.id;
+            active_output.active_workspace = workspace_to_active.id;
         }
-        self.active_workspace = workspace_to_active.id;
-        active_output.active_workspace = workspace_to_active.id;
-        active_output.lock = self
-            .toplevels
-            .values()
-            .any(|t| active_output.active_workspace == t.workspace && t.fullscreen);
+        let active_output_id = self.active_output.clone();
+        self.recompute_lock(&active_output_id);
         Ok(())
     }
 
@@ -332,6 +321,10 @@ impl<C: Compositor> OcclusionTracker<C> {
                     active_workspace,
                 },
             );
+            self.push_output_status_change(OutputStatusChange::Set {
+                output: output.clone(),
+                locked: false,
+            });
         }
         Ok(())
     }
@@ -374,6 +367,9 @@ impl<C: Compositor> OcclusionTracker<C> {
             )
         }
         self.outputs.remove(output_id);
+        self.push_output_status_change(OutputStatusChange::Removed {
+            output: output_id.clone(),
+        });
         Ok(())
     }
 
@@ -482,8 +478,50 @@ impl<C: Compositor> OcclusionTracker<C> {
         Ok(())
     }
 
-    /// Get the lock status of the outputs
-    pub fn get_output_status(&self) -> HashMap<OutputId, bool> {
+    fn clear_pending_status(&mut self) {
+        self.pending_status = std::array::from_fn(|_| None);
+    }
+
+    fn push_output_status_change(&mut self, change: OutputStatusChange) {
+        if let Some(slot) = self.pending_status.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(change);
+        } else {
+            debug_assert!(false, "pending output status changes overflow");
+        }
+    }
+
+    fn set_output_lock(&mut self, output_id: &OutputId, locked: bool) {
+        if let Some(output) = self.outputs.get_mut(output_id)
+            && output.lock != locked
+        {
+            output.lock = locked;
+            self.push_output_status_change(OutputStatusChange::Set {
+                output: output_id.clone(),
+                locked,
+            });
+        }
+    }
+
+    fn recompute_lock(&mut self, output_id: &OutputId) {
+        let Some(output) = self.outputs.get(output_id) else {
+            return;
+        };
+        let active_workspace = output.active_workspace;
+        let locked = self
+            .toplevels
+            .values()
+            .any(|t| t.workspace == active_workspace && t.fullscreen);
+
+        self.set_output_lock(output_id, locked);
+    }
+
+    /// Get the pending lock status changes of the outputs.
+    pub fn get_output_status(&self) -> &[Option<OutputStatusChange>; MAX_OUTPUT_STATUS_CHANGES] {
+        &self.pending_status
+    }
+
+    /// Get the full lock status of the outputs.
+    pub fn output_status_snapshot(&self) -> Vec<(OutputId, bool)> {
         self.outputs
             .iter()
             .map(|(id, output)| (id.clone(), output.lock))
@@ -491,6 +529,8 @@ impl<C: Compositor> OcclusionTracker<C> {
     }
 
     pub fn handle_event(&mut self, event: &CompositorEvent) -> anyhow::Result<()> {
+        self.clear_pending_status();
+
         if let CompositorEvent::OutputAdded(output_id) = event {
             tracing::info!("Dispatch: OutputAdded {output_id}");
             return self.add_output(output_id);

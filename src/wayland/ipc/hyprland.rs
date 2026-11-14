@@ -216,6 +216,16 @@ impl Compositor for Hyprland {
                         }
                     };
 
+                    if tx
+                        .send(ReadEvent::OutputStatus(
+                            occlusion_tracker.output_status_snapshot(),
+                        ))
+                        .is_err()
+                    {
+                        *stream.lock().unwrap() = None;
+                        return; // main loop dead
+                    }
+
                     let reader = BufReader::new(s);
                     for line in reader.lines() {
                         if shutdown.load(Ordering::Acquire) {
@@ -238,14 +248,22 @@ impl Compositor for Hyprland {
                                 break;
                             }
                             if tx
-                                .send(ReadEvent::StatusUpdated(
-                                    occlusion_tracker.get_output_status(),
-                                    CompositorEvent::event_type(&event),
-                                ))
+                                .send(ReadEvent::CompositorEvent(CompositorEvent::event_type(
+                                    &event,
+                                )))
                                 .is_err()
                             {
                                 *stream.lock().unwrap() = None;
                                 return; // main loop dead
+                            }
+                            for change in occlusion_tracker.get_output_status().iter().flatten() {
+                                if tx
+                                    .send(ReadEvent::OutputStatusUpdated(change.clone()))
+                                    .is_err()
+                                {
+                                    *stream.lock().unwrap() = None;
+                                    return; // main loop dead
+                                }
                             }
                         }
                     }
@@ -565,7 +583,7 @@ mod tests {
 
         let mut compositor_event_reader = CompositorEventReader::new();
         compositor_event_reader.add_dispatcher(Box::new(move |app, event| {
-            if let ReadEvent::StatusUpdated(_, e) = event
+            if let ReadEvent::CompositorEvent(e) = event
                 && *e == CompositorEventKind::ActiveWorkspace
             {
                 app.stop_main_loop();

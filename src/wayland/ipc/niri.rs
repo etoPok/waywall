@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -98,6 +97,11 @@ impl Compositor for Niri {
                 Ok(niri_ipc::Response::Handled) => {
                     reader.get_mut().shutdown(std::net::Shutdown::Write)?;
 
+                    if tx.send(ReadEvent::OutputStatus(Vec::new())).is_err() {
+                        *stream.lock().unwrap() = None;
+                        return Ok(());
+                    }
+
                     let mut event_buf = String::new();
                     loop {
                         if shutdown.load(Ordering::Acquire) {
@@ -114,8 +118,7 @@ impl Compositor for Niri {
                             Ok(_) => match Niri::parse_event(&event_buf) {
                                 Some(event) => {
                                     if tx
-                                        .send(ReadEvent::StatusUpdated(
-                                            HashMap::default(),
+                                        .send(ReadEvent::CompositorEvent(
                                             CompositorEvent::event_type(&event),
                                         ))
                                         .is_err()
