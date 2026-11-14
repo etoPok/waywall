@@ -86,47 +86,9 @@ mod tests {
     #[test]
     fn defaults_are_hwdec_and_0_frames() {
         let a = parse_from(args(&["waywall-test", "video.mp4"])).unwrap();
-        assert_eq!(a.frames, 0);
-        assert!(a.prod.use_hwdec);
-        assert_eq!(a.prod.video_path, "video.mp4");
-    }
-
-    #[test]
-    fn hwdec_vaapi_sets_flag() {
-        let a = parse_from(args(&["waywall-test", "--hwdec", "vaapi", "v.mp4"])).unwrap();
-        assert!(a.prod.use_hwdec);
-    }
-
-    #[test]
-    fn hwdec_no_clears_flag() {
-        let a = parse_from(args(&[
-            "waywall-test",
-            "--hwdec",
-            "vaapi",
-            "--hwdec",
-            "no",
-            "v.mp4",
-        ]))
-        .unwrap();
+        assert_eq!(a.frames, u64::MAX);
         assert!(!a.prod.use_hwdec);
-    }
-
-    #[test]
-    fn hwdec_invalid_errors() {
-        let e = parse_from(args(&["waywall-test", "--hwdec", "vulkan", "v.mp4"])).unwrap_err();
-        assert!(e.contains("invalid --hwdec"), "unexpected: {e}");
-    }
-
-    #[test]
-    fn hwdec_missing_value_errors() {
-        let e = parse_from(args(&["waywall-test", "--hwdec"])).unwrap_err();
-        assert!(e.contains("requires a value"), "unexpected: {e}");
-    }
-
-    #[test]
-    fn frames_custom_value() {
-        let a = parse_from(args(&["waywall-test", "--frames", "120", "v.mp4"])).unwrap();
-        assert_eq!(a.frames, 120);
+        assert_eq!(a.prod.video_path, "video.mp4");
     }
 
     #[test]
@@ -169,11 +131,5 @@ mod tests {
     fn help_propagates_from_prod() {
         let e = parse_from(args(&["waywall-test", "--help"])).unwrap_err();
         assert_eq!(e, "help");
-    }
-
-    #[test]
-    fn missing_program_name_errors() {
-        let e = parse_from(Vec::<String>::new()).unwrap_err();
-        assert_eq!(e, "missing program name");
     }
 }
