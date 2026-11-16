@@ -115,20 +115,29 @@ pub fn run(bootstrap_output: crate::app::bootstrap::BootstrapOutput) -> anyhow::
     Ok(())
 }
 
-pub fn insert_pacer(
+fn insert_pacer(
     handle: &LoopHandle<'static, App>,
     use_hwdec: bool,
     use_occlusion: bool,
 ) -> anyhow::Result<()> {
-    handle
-        .insert_source(Timer::immediate(), move |_, _, app| {
-            pacer_tick(app, &on_frame(use_hwdec, use_occlusion))
-        })
-        .map(|_| ())
-        .map_err(|e| anyhow::anyhow!("Error registering pacer_tick: {e:#}"))
+    if use_occlusion {
+        handle
+            .insert_source(Timer::immediate(), move |_, _, app| {
+                pacer_tick_occluded(app, &on_frame(use_hwdec, use_occlusion))
+            })
+            .map(|_| ())
+            .map_err(|e| anyhow::anyhow!("Error registering pacer_tick: {e:#}"))
+    } else {
+        handle
+            .insert_source(Timer::immediate(), move |_, _, app| {
+                pacer_tick(app, &on_frame(use_hwdec, use_occlusion))
+            })
+            .map(|_| ())
+            .map_err(|e| anyhow::anyhow!("Error registering pacer_tick: {e:#}"))
+    }
 }
 
-pub fn on_frame(use_hwdec: bool, use_occlusion: bool) -> fn(&mut App, *mut AVFrame) {
+fn on_frame(use_hwdec: bool, use_occlusion: bool) -> fn(&mut App, *mut AVFrame) {
     if use_hwdec && use_occlusion {
         on_drm_frame_occluded
     } else if !use_hwdec && use_occlusion {
@@ -143,24 +152,21 @@ pub fn on_frame(use_hwdec: bool, use_occlusion: bool) -> fn(&mut App, *mut AVFra
 /// Reinsert the render source when it has been removed and there is at least one output
 /// that is no longer occluded.
 pub fn reinsert_render_source(app: &mut App) {
-    let Some(occlusion) = app.occlusion.as_ref() else {
-        return;
-    };
-
-    if !occlusion.render_source_removed || app.all_outputs_occluded() {
+    if app.all_outputs_occluded() {
         return;
     }
 
-    match insert_pacer(
-        &occlusion.loop_handle,
-        app.use_hwdec,
-        app.occlusion.is_some(),
-    ) {
+    let Some(occlusion) = app.occlusion.as_mut() else {
+        return;
+    };
+
+    if !occlusion.render_source_removed {
+        return;
+    }
+
+    match insert_pacer(&occlusion.loop_handle, app.use_hwdec, true) {
         Ok(()) => {
-            app.occlusion
-                .as_mut()
-                .expect("occlusion runtime is present")
-                .render_source_removed = false;
+            occlusion.render_source_removed = false;
         }
         Err(e) => {
             // The flag is kept, so the source is inserted again with the next status update.
