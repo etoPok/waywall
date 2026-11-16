@@ -1,6 +1,6 @@
 # waywall
 
-waywall is a Wayland video wallpaper client for compositors supporting the wlr-layer-shell protocol, such as Hyprland and Sway.
+waywall is a Wayland video wallpaper client primarily targeted at tiling compositors such as Hyprland, Niri and Sway, which support the wlr-layer-shell protocol. Other compositors, such as KDE Plasma, already provide better-integrated wallpaper options and are not the focus of this project.
 
 <https://github.com/user-attachments/assets/99ecf992-db35-4fcb-811c-7cd1131fb6b8>
 
@@ -46,7 +46,7 @@ cargo build --release
 # Basic
 waywall /path/to/video.mp4
 
-# Specify multiple outputs, hardware-accelerated decoding via VA-API, and target fps
+# Specify target fps, hardware-accelerated decoding via VA-API, and multiple outputs
 waywall --fps 30 --hwdec vaapi -o eDP-1,DP-3 /path/to/video.mp4
 ```
 
@@ -58,7 +58,17 @@ waywall --fps 30 --hwdec vaapi -o eDP-1,DP-3 /path/to/video.mp4
 | `-o, --output`    | output name           | all outputs           | For example, in Hyprland, you can see the name of your outputs with `hyprctl monitors` |
 | `--fps`           | target fps            | source frame rate     | Integer between FPS_MIN-FPS_MAX. `target_fps` can have a maximum value equal to the source frame rate |
 | `--hwdec`         | `no` or `vaapi`       | `no`                  | Enables hardware-accelerated decoding. `vaapi` uses the DRM pipeline resolving the compositor render node via VA-API; `no` uses software decoding with EGL/GL rendering. Requires a VA-API capable FFmpeg/driver and `/dev/dri/renderD*` access |
+| `--occlusion`     | `on` or `off`         | `off`                 | Experimental. Pauses rendering while every selected output is occluded. Only available on Hyprland; enabling it on any other compositor makes waywall fail at startup.|
 | `<video_path>`    | file path             | required              | mp4 video path |
+
+### Output occlusion detection (experimental)
+
+`--occlusion on` asks the compositor for output lock/occlusion state and pauses rendering while every selected output is occluded. Rendering resumes automatically when an output becomes visible again.
+
+> **Warning:** this feature is experimental and may have bugs. It is currently
+> only available on Hyprland, where it requires access to the Hyprland IPC
+> sockets. Enabling `--occlusion on` on any other compositor makes waywall fail
+> at startup. It is disabled by default.
 
 ## Recommended video formats
 
