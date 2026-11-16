@@ -661,11 +661,12 @@ mod tests {
             layer_shell,
         );
 
-        Ok(crate::app::state::App::new(
+        let mut app = crate::app::state::App::new(
             wl_conn,
             crate::decoder::Decoder::new(),
             crate::timing::Timing::new(),
-            loop_handle,
-        ))
+        );
+        app.occlusion = Some(crate::app::state::OcclusionRuntime::new(loop_handle));
+        Ok(app)
     }
 }

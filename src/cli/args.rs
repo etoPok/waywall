@@ -8,6 +8,7 @@ pub struct Args {
     pub video_path: String,
     pub outputs: Vec<String>,
     pub use_hwdec: bool,
+    pub use_occlusion: bool,
     pub fps: Option<u64>,
 }
 
@@ -20,6 +21,7 @@ fn print_usage(program: &str) {
         "  --fps <{FPS_MIN}-{FPS_MAX}>              Define the target frame rate for video playback"
     );
     eprintln!("  --hwdec <no|vaapi>         Enable hardware-accelerated decoding (VA-API)");
+    eprintln!("  --occlusion <on|off>       Enable output occlusion");
     eprintln!("  -h, --help                 Show this help");
     eprintln!();
     eprintln!("Example: {program} path/to/wallpaper.mp4");
@@ -39,6 +41,7 @@ where
     let mut video_path: Option<String> = None;
     let mut outputs: Vec<String> = Vec::new();
     let mut use_hwdec: bool = false;
+    let mut use_occlusion: bool = false;
     let mut fps: Option<u64> = None;
 
     let mut i = 1;
@@ -70,6 +73,21 @@ where
                     other => {
                         return Err(format!(
                             "error: invalid --hwdec '{other}' (expected no|vaapi)"
+                        ));
+                    }
+                }
+            }
+            "--occlusion" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("error: --occlusion requires a value (on|off)".into());
+                }
+                match args[i].as_str() {
+                    "on" => use_occlusion = true,
+                    "off" => use_occlusion = false,
+                    other => {
+                        return Err(format!(
+                            "error: invalid --occlusion '{other}' (expected on|off)"
                         ));
                     }
                 }
@@ -118,6 +136,7 @@ where
         video_path,
         outputs,
         use_hwdec,
+        use_occlusion,
         fps,
     })
 }
@@ -152,7 +171,29 @@ mod tests {
         assert_eq!(a.video_path, "video.mp4");
         assert!(a.outputs.is_empty());
         assert!(!a.use_hwdec);
+        assert!(!a.use_occlusion);
         assert_eq!(a.fps, None);
+    }
+
+    #[test]
+    fn parse_occlusion_on_and_off() {
+        let a = parse_from(args(&["waywall", "--occlusion", "on", "v.mp4"])).unwrap();
+        assert!(a.use_occlusion);
+
+        let b = parse_from(args(&["waywall", "--occlusion", "off", "v.mp4"])).unwrap();
+        assert!(!b.use_occlusion);
+    }
+
+    #[test]
+    fn parse_occlusion_invalid_errors() {
+        let e = parse_from(args(&["waywall", "--occlusion", "bad", "v.mp4"])).unwrap_err();
+        assert!(e.contains("invalid --occlusion"));
+    }
+
+    #[test]
+    fn parse_occlusion_missing_value_errors() {
+        let e = parse_from(args(&["waywall", "--occlusion"])).unwrap_err();
+        assert!(e.contains("requires a value"));
     }
 
     #[test]

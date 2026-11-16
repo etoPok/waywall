@@ -12,6 +12,7 @@ fn print_usage(program: &str) {
     eprintln!("Options:");
     eprintln!("  -o, --output <name>        Output connector(s) to use (e.g. eDP-1, DP-3)");
     eprintln!("  --hwdec <no|vaapi>         Enable hardware-accelerated decoding (VA-API)");
+    eprintln!("  --occlusion <on|off>       Enable output occlusion");
     eprintln!("  -h, --help                 Show this help");
     eprintln!();
     eprintln!("Example: {program} path/to/wallpaper.mp4");
@@ -88,6 +89,7 @@ mod tests {
         let a = parse_from(args(&["waywall-test", "video.mp4"])).unwrap();
         assert_eq!(a.frames, u64::MAX);
         assert!(!a.prod.use_hwdec);
+        assert!(!a.prod.use_occlusion);
         assert_eq!(a.prod.video_path, "video.mp4");
     }
 
@@ -117,6 +119,8 @@ mod tests {
             "eDP-1,DP-3",
             "--hwdec",
             "vaapi",
+            "--occlusion",
+            "on",
             "--frames",
             "10",
             "video.mp4",
@@ -124,6 +128,7 @@ mod tests {
         .unwrap();
         assert_eq!(a.prod.outputs, vec!["eDP-1", "DP-3"]);
         assert!(a.prod.use_hwdec);
+        assert!(a.prod.use_occlusion);
         assert_eq!(a.frames, 10);
     }
 

@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use crate::app::state::App;
+use crate::app::bootstrap::CompositorIntegration;
+use crate::app::state::{App, Monitor};
 use crate::shader::Shader;
 use crate::vaapi_converter::VaapiConverter;
-use crate::wayland::ipc::{AnyCompositor, CompositorChannel, CompositorEventReader};
 use anyhow::Context;
 use calloop::ping::PingSource;
 use calloop::timer::{TimeoutAction, Timer};
@@ -17,9 +17,7 @@ pub fn build_common_loop(
     event_loop: &mut EventLoop<'static, App>,
     app: &mut App,
     queue: EventQueue<App>,
-    compositor: AnyCompositor,
-    compositor_event_reader: CompositorEventReader,
-    channel: CompositorChannel,
+    compositor: Option<CompositorIntegration>,
     error_ping_source: PingSource,
 ) -> anyhow::Result<()> {
     app.main_loop_signal = Some(event_loop.get_signal());
@@ -35,33 +33,39 @@ pub fn build_common_loop(
         })
         .map_err(|e| anyhow::anyhow!("Error registering decoder error ping: {}", e))?;
 
-    let compositor_event_reader =
-        std::rc::Rc::new(std::cell::RefCell::new(compositor_event_reader));
-    let compositor_event_reader_for_spawn = std::rc::Rc::clone(&compositor_event_reader);
-    let (tx, rx) = channel;
-    event_loop
-        .handle()
-        .insert_source(rx, move |event, _, app| {
-            if let calloop::channel::Event::Msg(event) = event {
-                compositor_event_reader.borrow().dispatch(&event, app);
-            }
-        })
-        .map_err(|e| anyhow::anyhow!("Error registering compositor channel: {}", e))?;
+    if let Some(CompositorIntegration {
+        compositor,
+        event_reader,
+        channel,
+    }) = compositor
+    {
+        let compositor_event_reader = std::rc::Rc::new(std::cell::RefCell::new(event_reader));
+        let compositor_event_reader_for_spawn = std::rc::Rc::clone(&compositor_event_reader);
+        let (tx, rx) = channel;
+        event_loop
+            .handle()
+            .insert_source(rx, move |event, _, app| {
+                if let calloop::channel::Event::Msg(event) = event {
+                    compositor_event_reader.borrow().dispatch(&event, app);
+                }
+            })
+            .map_err(|e| anyhow::anyhow!("Error registering compositor channel: {}", e))?;
 
-    let mut tx = Some(tx);
-    event_loop
-        .handle()
-        .insert_source(Timer::immediate(), move |_, _, _| {
-            if let Some(tx) = tx.take()
-                && let Err(e) = compositor_event_reader_for_spawn
-                    .borrow_mut()
-                    .spawn(tx, compositor.clone())
-            {
-                error!("{e:#}");
-            }
-            TimeoutAction::Drop
-        })
-        .map_err(|e| anyhow::anyhow!("Error registering reader spawn source: {}", e))?;
+        let mut tx = Some(tx);
+        event_loop
+            .handle()
+            .insert_source(Timer::immediate(), move |_, _, _| {
+                if let Some(tx) = tx.take()
+                    && let Err(e) = compositor_event_reader_for_spawn
+                        .borrow_mut()
+                        .spawn(tx, compositor.clone())
+                {
+                    error!("{e:#}");
+                }
+                TimeoutAction::Drop
+            })
+            .map_err(|e| anyhow::anyhow!("Error registering reader spawn source: {}", e))?;
+    }
 
     event_loop
         .handle()
@@ -90,8 +94,6 @@ pub fn run(bootstrap_output: crate::app::bootstrap::BootstrapOutput) -> anyhow::
         queue,
         mut event_loop,
         compositor,
-        compositor_event_reader,
-        channel,
         ping_source: _,
         error_ping_source,
     } = bootstrap_output;
@@ -100,12 +102,10 @@ pub fn run(bootstrap_output: crate::app::bootstrap::BootstrapOutput) -> anyhow::
         &mut app,
         queue,
         compositor,
-        compositor_event_reader,
-        channel,
         error_ping_source,
     )?;
 
-    insert_pacer(event_loop.handle(), app.use_hwdec)?;
+    insert_pacer(&event_loop.handle(), app.use_hwdec, app.occlusion.is_some())?;
 
     event_loop
         .run(None, &mut app, |_app| {})
@@ -115,36 +115,65 @@ pub fn run(bootstrap_output: crate::app::bootstrap::BootstrapOutput) -> anyhow::
     Ok(())
 }
 
-pub fn insert_pacer(handle: LoopHandle<'static, App>, use_hwdec: bool) -> anyhow::Result<()> {
+pub fn insert_pacer(
+    handle: &LoopHandle<'static, App>,
+    use_hwdec: bool,
+    use_occlusion: bool,
+) -> anyhow::Result<()> {
     handle
         .insert_source(Timer::immediate(), move |_, _, app| {
-            pacer_tick(app, &on_frame(use_hwdec))
+            pacer_tick(app, &on_frame(use_hwdec, use_occlusion))
         })
         .map(|_| ())
         .map_err(|e| anyhow::anyhow!("Error registering pacer_tick: {e:#}"))
 }
 
+pub fn on_frame(use_hwdec: bool, use_occlusion: bool) -> fn(&mut App, *mut AVFrame) {
+    if use_hwdec && use_occlusion {
+        on_drm_frame_occluded
+    } else if !use_hwdec && use_occlusion {
+        on_egl_gl_frame_occluded
+    } else if use_hwdec {
+        on_drm_frame
+    } else {
+        on_egl_gl_frame
+    }
+}
+
+/// Reinsert the render source when it has been removed and there is at least one output
+/// that is no longer occluded.
+pub fn reinsert_render_source(app: &mut App) {
+    let Some(occlusion) = app.occlusion.as_ref() else {
+        return;
+    };
+
+    if !occlusion.render_source_removed || app.all_outputs_occluded() {
+        return;
+    }
+
+    match insert_pacer(
+        &occlusion.loop_handle,
+        app.use_hwdec,
+        app.occlusion.is_some(),
+    ) {
+        Ok(()) => {
+            app.occlusion
+                .as_mut()
+                .expect("occlusion runtime is present")
+                .render_source_removed = false;
+        }
+        Err(e) => {
+            // The flag is kept, so the source is inserted again with the next status update.
+            error!("{e:#}");
+        }
+    }
+}
+
+/// Frame pacing loop shared by the plain and the occlusion-aware paths.
 pub fn pacer_tick<F>(app: &mut App, on_frame: &F) -> TimeoutAction
 where
     F: Fn(&mut App, *mut AVFrame) + 'static,
 {
-    if app.all_outputs_occluded() {
-        app.timing.pause();
-        app.render_source_removed = true;
-        debug!("All outputs are occluded, removing the render source");
-        return TimeoutAction::Drop;
-    }
-
-    // The timeline is resumed here, and not when the render source is re-inserted, so the
-    // paused interval is measured up to this point: whatever the event loop dispatches in
-    // between (the timer source is only dispatched in the next poll cycle) does not make
-    // the video jump forward.
-    // It has to be done before `update()`, otherwise the pts of the first frame after the
-    // pause would be compared against the pre-pause one and could look like a seek.
-    if app.timing.is_paused() {
-        app.timing.resume();
-    }
-
     loop {
         let frame = match app.frame_queue.try_get_read_slot() {
             Some(f) => f,
@@ -167,15 +196,46 @@ where
     }
 }
 
-pub fn on_frame(use_hwdec: bool) -> fn(&mut App, *mut AVFrame) {
-    if use_hwdec {
-        on_drm_frame
-    } else {
-        on_egl_gl_frame
+pub fn pacer_tick_occluded<F>(app: &mut App, on_frame: &F) -> TimeoutAction
+where
+    F: Fn(&mut App, *mut AVFrame) + 'static,
+{
+    if app.all_outputs_occluded() {
+        app.timing.pause();
+        if let Some(occlusion) = app.occlusion.as_mut() {
+            occlusion.render_source_removed = true;
+        }
+        debug!("All outputs are occluded, removing the render source");
+        return TimeoutAction::Drop;
     }
+
+    // The timeline is resumed here, and not when the render source is re-inserted, so the
+    // paused interval is measured up to this point: whatever the event loop dispatches in
+    // between (the timer source is only dispatched in the next poll cycle) does not make
+    // the video jump forward.
+    // It has to be done before `update()`, otherwise the pts of the first frame after the
+    // pause would be compared against the pre-pause one and could look like a seek.
+    if app.timing.is_paused() {
+        app.timing.resume();
+    }
+
+    pacer_tick(app, on_frame)
 }
 
 fn on_egl_gl_frame(app: &mut App, frame: *mut AVFrame) {
+    render_egl_gl_frame(app, frame, |_, _| true);
+}
+
+fn on_egl_gl_frame_occluded(app: &mut App, frame: *mut AVFrame) {
+    render_egl_gl_frame(app, frame, |monitors, i| {
+        !monitors.get(i).is_some_and(|m| m.occluded)
+    });
+}
+
+fn render_egl_gl_frame<F>(app: &mut App, frame: *mut AVFrame, should_render: F)
+where
+    F: Fn(&[Monitor], usize) -> bool,
+{
     let fmt = unsafe { (*frame).format as u32 };
 
     let gl_ctx = app.gl_ctx.as_mut().unwrap();
@@ -200,7 +260,7 @@ fn on_egl_gl_frame(app: &mut App, frame: *mut AVFrame) {
         crate::render::frame::upload_frame(&gl_ctx.textures, frame);
 
         for (i, rs) in app.render_states.iter_mut().enumerate() {
-            if app.monitors.get(i).is_some_and(|m| m.occluded) {
+            if !should_render(&app.monitors, i) {
                 continue;
             }
 
@@ -243,6 +303,19 @@ fn on_egl_gl_frame(app: &mut App, frame: *mut AVFrame) {
 }
 
 fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
+    render_drm_frame(app, frame, |_, _| true);
+}
+
+fn on_drm_frame_occluded(app: &mut App, frame: *mut AVFrame) {
+    render_drm_frame(app, frame, |monitors, i| {
+        !monitors.get(i).is_some_and(|m| m.occluded)
+    });
+}
+
+fn render_drm_frame<F>(app: &mut App, frame: *mut AVFrame, should_render: F)
+where
+    F: Fn(&[Monitor], usize) -> bool,
+{
     if app.converter.is_none() {
         let w = unsafe { (*frame).width };
         let h = unsafe { (*frame).height };
@@ -290,8 +363,8 @@ fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
         )
     };
 
-    for monitor in app.monitors.iter() {
-        if monitor.occluded {
+    for (i, monitor) in app.monitors.iter().enumerate() {
+        if !should_render(&app.monitors, i) {
             continue;
         }
 

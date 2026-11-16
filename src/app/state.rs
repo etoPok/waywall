@@ -137,6 +137,23 @@ impl Drop for WlBufferState {
     }
 }
 
+pub struct OcclusionRuntime {
+    /// Handle of the main event loop.
+    pub loop_handle: LoopHandle<'static, App>,
+
+    /// True while the render source is not registered in the event loop.
+    pub render_source_removed: bool,
+}
+
+impl OcclusionRuntime {
+    pub fn new(loop_handle: LoopHandle<'static, App>) -> Self {
+        Self {
+            loop_handle,
+            render_source_removed: false,
+        }
+    }
+}
+
 pub struct App {
     pub wl_conn: WlConnection,
 
@@ -147,11 +164,8 @@ pub struct App {
     pub main_loop_signal: Option<LoopSignal>,
     pub configured: bool,
 
-    /// Handle of the main event loop
-    pub loop_handle: LoopHandle<'static, App>,
-
-    /// True while the render source is not registered in the event loop.
-    pub render_source_removed: bool,
+    /// Present only when output occlusion detection is enabled.
+    pub occlusion: Option<OcclusionRuntime>,
 
     pub use_hwdec: bool,
 
@@ -176,12 +190,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(
-        wl_conn: WlConnection,
-        decoder: Decoder,
-        timing: Timing,
-        loop_handle: LoopHandle<'static, App>,
-    ) -> Self {
+    pub fn new(wl_conn: WlConnection, decoder: Decoder, timing: Timing) -> Self {
         Self {
             wl_conn,
             decoder,
@@ -191,8 +200,7 @@ impl App {
             monitors: Vec::new(),
             main_loop_signal: None,
             configured: false,
-            loop_handle,
-            render_source_removed: false,
+            occlusion: None,
             use_hwdec: false,
             render_states: Vec::new(),
             frame_queue: Arc::new(FrameQueue::new()),

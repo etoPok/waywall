@@ -5,13 +5,15 @@ use calloop::timer::Timer;
 use ffmpeg_sys_next::AVFrame;
 use tracing::{debug, info, warn};
 
-use waywall::app::state::App;
+use waywall::app::state::{App, Monitor};
 
 #[path = "common/test_args.rs"]
 mod test_args;
 
 #[path = "common/utils.rs"]
 mod utils;
+
+type PacerTick = fn(&mut App, &fn(&mut App, *mut AVFrame)) -> calloop::timer::TimeoutAction;
 
 fn main() -> anyhow::Result<()> {
     waywall::logging::init_test();
@@ -29,8 +31,6 @@ fn main() -> anyhow::Result<()> {
         queue,
         mut event_loop,
         compositor,
-        compositor_event_reader,
-        channel,
         ping_source: _,
         error_ping_source,
     } = bootstrap_output;
@@ -39,8 +39,6 @@ fn main() -> anyhow::Result<()> {
         &mut app,
         queue,
         compositor,
-        compositor_event_reader,
-        channel,
         error_ping_source,
     )
     .context("build_common_loop")?;
@@ -69,10 +67,11 @@ fn main() -> anyhow::Result<()> {
         )
         .map_err(|e| anyhow::anyhow!("Error registering grace timer: {}", e))?;
 
-    let on_frame = if test_args.prod.use_hwdec {
-        on_drm_frame
+    let on_frame = on_frame(test_args.prod.use_hwdec, test_args.prod.use_occlusion);
+    let pacer_tick: PacerTick = if test_args.prod.use_occlusion {
+        waywall::runtime::event_loop::pacer_tick_occluded
     } else {
-        on_egl_gl_frame
+        waywall::runtime::event_loop::pacer_tick
     };
     event_loop
         .handle()
@@ -81,7 +80,7 @@ fn main() -> anyhow::Result<()> {
                 return calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(1));
             }
 
-            waywall::runtime::event_loop::pacer_tick(app, &on_frame)
+            pacer_tick(app, &on_frame)
         })
         .map_err(|e| anyhow::anyhow!("Error registering parcer_tick: {}", e))?;
 
@@ -121,7 +120,32 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn on_frame(use_hwdec: bool, use_occlusion: bool) -> fn(&mut App, *mut AVFrame) {
+    if use_hwdec && use_occlusion {
+        on_drm_frame_occluded
+    } else if !use_hwdec && use_occlusion {
+        on_egl_gl_frame_occluded
+    } else if use_hwdec {
+        on_drm_frame
+    } else {
+        on_egl_gl_frame
+    }
+}
+
 fn on_egl_gl_frame(app: &mut App, frame: *mut AVFrame) {
+    render_egl_gl_frame(app, frame, |_, _| true);
+}
+
+fn on_egl_gl_frame_occluded(app: &mut App, frame: *mut AVFrame) {
+    render_egl_gl_frame(app, frame, |monitors, i| {
+        !monitors.get(i).is_some_and(|m| m.occluded)
+    });
+}
+
+fn render_egl_gl_frame<F>(app: &mut App, frame: *mut AVFrame, should_render: F)
+where
+    F: Fn(&[Monitor], usize) -> bool,
+{
     unsafe {
         debug!(
             "process_egl_gl: read slot pts={} pkt_dts={} best_effort={} w={} h={} fmt={} ({}) queue_len={}",
@@ -160,6 +184,10 @@ fn on_egl_gl_frame(app: &mut App, frame: *mut AVFrame) {
         waywall::render::frame::upload_frame(&gl_ctx.textures, frame);
 
         for (i, rs) in app.render_states.iter_mut().enumerate() {
+            if !should_render(&app.monitors, i) {
+                continue;
+            }
+
             if !rs.wl_callback_handled {
                 app.skipped_frames_unhandled_wl_callback += 1;
                 continue;
@@ -199,6 +227,19 @@ fn on_egl_gl_frame(app: &mut App, frame: *mut AVFrame) {
 }
 
 fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
+    render_drm_frame(app, frame, |_, _| true);
+}
+
+fn on_drm_frame_occluded(app: &mut App, frame: *mut AVFrame) {
+    render_drm_frame(app, frame, |monitors, i| {
+        !monitors.get(i).is_some_and(|m| m.occluded)
+    });
+}
+
+fn render_drm_frame<F>(app: &mut App, frame: *mut AVFrame, should_render: F)
+where
+    F: Fn(&[Monitor], usize) -> bool,
+{
     unsafe {
         debug!(
             "process_drm_frame: read slot pts={} pkt_dts={} best_effort={} w={} h={} fmt={} ({}) queue_len={}",
@@ -269,7 +310,11 @@ fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
         )
     };
 
-    for monitor in app.monitors.iter() {
+    for (i, monitor) in app.monitors.iter().enumerate() {
+        if !should_render(&app.monitors, i) {
+            continue;
+        }
+
         let surface = monitor.surface.as_ref().unwrap();
         surface.attach(Some(&buf), 0, 0);
         surface.damage_buffer(0, 0, buf_w, buf_h);
