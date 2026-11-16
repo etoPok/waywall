@@ -27,13 +27,15 @@ fn main() -> anyhow::Result<()> {
     let waywall::app::bootstrap::BootstrapOutput {
         mut app,
         queue,
+        mut event_loop,
         compositor,
         compositor_event_reader,
         channel,
         ping_source: _,
         error_ping_source,
     } = bootstrap_output;
-    let mut event_loop = waywall::runtime::event_loop::build_common_loop(
+    waywall::runtime::event_loop::build_common_loop(
+        &mut event_loop,
         &mut app,
         queue,
         compositor,

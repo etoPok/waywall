@@ -5,24 +5,23 @@ use crate::shader::Shader;
 use crate::vaapi_converter::VaapiConverter;
 use crate::wayland::ipc::{AnyCompositor, CompositorChannel, CompositorEventReader};
 use anyhow::Context;
-use calloop::EventLoop;
 use calloop::ping::PingSource;
 use calloop::timer::{TimeoutAction, Timer};
+use calloop::{EventLoop, LoopHandle};
 use calloop_wayland_source::WaylandSource;
 use ffmpeg_sys_next::{AVFrame, AVPixelFormat};
 use tracing::{debug, error, info, warn};
 use wayland_client::EventQueue;
 
 pub fn build_common_loop(
+    event_loop: &mut EventLoop<'static, App>,
     app: &mut App,
     queue: EventQueue<App>,
     compositor: AnyCompositor,
     compositor_event_reader: CompositorEventReader,
     channel: CompositorChannel,
     error_ping_source: PingSource,
-) -> anyhow::Result<EventLoop<'static, App>> {
-    let event_loop: EventLoop<'static, App> =
-        EventLoop::try_new().context("Error creating event loop")?;
+) -> anyhow::Result<()> {
     app.main_loop_signal = Some(event_loop.get_signal());
 
     WaylandSource::new(app.wl_conn.conn.clone(), queue)
@@ -82,23 +81,22 @@ pub fn build_common_loop(
         .context("Error setting up signal handlers")?;
     debug!("Event loop started. Ctrl+C to exit.");
 
-    Ok(event_loop)
+    Ok(())
 }
 
-pub fn run(
-    args: &crate::cli::args::Args,
-    bootstrap_output: crate::app::bootstrap::BootstrapOutput,
-) -> anyhow::Result<()> {
+pub fn run(bootstrap_output: crate::app::bootstrap::BootstrapOutput) -> anyhow::Result<()> {
     let crate::app::bootstrap::BootstrapOutput {
         mut app,
         queue,
+        mut event_loop,
         compositor,
         compositor_event_reader,
         channel,
         ping_source: _,
         error_ping_source,
     } = bootstrap_output;
-    let mut event_loop = build_common_loop(
+    build_common_loop(
+        &mut event_loop,
         &mut app,
         queue,
         compositor,
@@ -107,13 +105,7 @@ pub fn run(
         error_ping_source,
     )?;
 
-    let on_frame = on_frame(args.use_hwdec);
-    event_loop
-        .handle()
-        .insert_source(Timer::immediate(), move |_, _, app| {
-            pacer_tick(app, &on_frame)
-        })
-        .map_err(|e| anyhow::anyhow!("Error registering pacer_tick: {e:#}"))?;
+    insert_pacer(event_loop.handle(), app.use_hwdec)?;
 
     event_loop
         .run(None, &mut app, |_app| {})
@@ -123,10 +115,36 @@ pub fn run(
     Ok(())
 }
 
+pub fn insert_pacer(handle: LoopHandle<'static, App>, use_hwdec: bool) -> anyhow::Result<()> {
+    handle
+        .insert_source(Timer::immediate(), move |_, _, app| {
+            pacer_tick(app, &on_frame(use_hwdec))
+        })
+        .map(|_| ())
+        .map_err(|e| anyhow::anyhow!("Error registering pacer_tick: {e:#}"))
+}
+
 pub fn pacer_tick<F>(app: &mut App, on_frame: &F) -> TimeoutAction
 where
     F: Fn(&mut App, *mut AVFrame) + 'static,
 {
+    if app.all_outputs_occluded() {
+        app.timing.pause();
+        app.render_source_removed = true;
+        debug!("All outputs are occluded, removing the render source");
+        return TimeoutAction::Drop;
+    }
+
+    // The timeline is resumed here, and not when the render source is re-inserted, so the
+    // paused interval is measured up to this point: whatever the event loop dispatches in
+    // between (the timer source is only dispatched in the next poll cycle) does not make
+    // the video jump forward.
+    // It has to be done before `update()`, otherwise the pts of the first frame after the
+    // pause would be compared against the pre-pause one and could look like a seek.
+    if app.timing.is_paused() {
+        app.timing.resume();
+    }
+
     loop {
         let frame = match app.frame_queue.try_get_read_slot() {
             Some(f) => f,
@@ -182,6 +200,10 @@ fn on_egl_gl_frame(app: &mut App, frame: *mut AVFrame) {
         crate::render::frame::upload_frame(&gl_ctx.textures, frame);
 
         for (i, rs) in app.render_states.iter_mut().enumerate() {
+            if app.monitors.get(i).is_some_and(|m| m.occluded) {
+                continue;
+            }
+
             if !rs.wl_callback_handled {
                 app.skipped_frames_unhandled_wl_callback += 1;
                 continue;
@@ -269,6 +291,10 @@ fn on_drm_frame(app: &mut App, frame: *mut AVFrame) {
     };
 
     for monitor in app.monitors.iter() {
+        if monitor.occluded {
+            continue;
+        }
+
         let surface = monitor.surface.as_ref().unwrap();
         surface.attach(Some(&buf), 0, 0);
         surface.damage_buffer(0, 0, buf_w, buf_h);

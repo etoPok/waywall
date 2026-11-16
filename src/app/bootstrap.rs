@@ -3,6 +3,7 @@ use std::os::raw::c_void;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use calloop::EventLoop;
 use calloop::ping::{self, PingSource};
 use tracing::{debug, warn};
 use wayland_client::EventQueue;
@@ -18,11 +19,14 @@ use crate::render::egl::{
 use crate::render::state::{GlContext, RenderState};
 use crate::timing::Timing;
 use crate::wayland::connection::WlConnection;
-use crate::wayland::ipc::{AnyCompositor, CompositorChannel, CompositorEventReader, ReadEvent};
+use crate::wayland::ipc::{
+    AnyCompositor, CompositorChannel, CompositorEventReader, OutputStatusChange, ReadEvent,
+};
 
 pub struct BootstrapOutput {
     pub app: App,
     pub queue: EventQueue<App>,
+    pub event_loop: EventLoop<'static, App>,
     pub compositor: AnyCompositor,
     pub compositor_event_reader: CompositorEventReader,
     pub channel: CompositorChannel,
@@ -39,8 +43,10 @@ pub fn bootstrap(args: &Args) -> Result<BootstrapOutput> {
 }
 
 pub fn bootstrap_gl_egl(args: &Args) -> Result<BootstrapOutput> {
-    let (mut app, mut queue) = common_connection()?;
+    let (mut app, mut queue, event_loop) = common_connection()?;
     let (compositor, compositor_event_reader, channel) = setup_compositor()?;
+
+    app.use_hwdec = args.use_hwdec;
 
     queue
         .roundtrip(&mut app)
@@ -66,6 +72,7 @@ pub fn bootstrap_gl_egl(args: &Args) -> Result<BootstrapOutput> {
     Ok(BootstrapOutput {
         app,
         queue,
+        event_loop,
         compositor,
         compositor_event_reader,
         channel,
@@ -75,10 +82,12 @@ pub fn bootstrap_gl_egl(args: &Args) -> Result<BootstrapOutput> {
 }
 
 pub fn bootstrap_drm(args: &Args) -> Result<BootstrapOutput> {
-    let (mut app, mut queue) = common_connection()?;
+    let (mut app, mut queue, event_loop) = common_connection()?;
     let (compositor, compositor_event_reader, channel) = setup_compositor()?;
     app.wl_conn.bind_zwp_linux_dmabuf_v1()?;
     let feedback = app.wl_conn.get_default_feedback()?;
+
+    app.use_hwdec = args.use_hwdec;
 
     queue
         .roundtrip(&mut app)
@@ -121,6 +130,7 @@ pub fn bootstrap_drm(args: &Args) -> Result<BootstrapOutput> {
     Ok(BootstrapOutput {
         app,
         queue,
+        event_loop,
         compositor,
         compositor_event_reader,
         channel,
@@ -129,14 +139,17 @@ pub fn bootstrap_drm(args: &Args) -> Result<BootstrapOutput> {
     })
 }
 
-fn common_connection() -> Result<(App, EventQueue<App>)> {
+fn common_connection() -> Result<(App, EventQueue<App>, EventLoop<'static, App>)> {
     let (conn, globals, queue) = WlConnection::connect()?;
     let (wl_compositor, layer_shell) =
         WlConnection::bind_required_protocol_extensions(&globals, &queue)?;
     let mut wl_conn = WlConnection::new(conn, globals, queue.handle(), wl_compositor, layer_shell);
     wl_conn.bind_wp_viewporter()?;
 
-    let mut app = App::new(wl_conn, Decoder::new(), Timing::new());
+    let event_loop: EventLoop<'static, App> =
+        EventLoop::try_new().context("Error creating event loop")?;
+
+    let mut app = App::new(wl_conn, Decoder::new(), Timing::new(), event_loop.handle());
     app.monitors.extend(
         app.wl_conn
             .bind_all_available_wl_outputs()
@@ -144,23 +157,37 @@ fn common_connection() -> Result<(App, EventQueue<App>)> {
             .map(Monitor::new),
     );
 
-    Ok((app, queue))
+    Ok((app, queue, event_loop))
 }
 
 fn setup_compositor() -> Result<(AnyCompositor, CompositorEventReader, CompositorChannel)> {
     let compositor: AnyCompositor = match crate::wayland::ipc::hyprland::Hyprland::connect() {
         Ok(h) => AnyCompositor::Hyprland(h),
-        Err(_) => match crate::wayland::ipc::niri::Niri::connect() {
-            Ok(n) => AnyCompositor::Niri(n),
-            Err(_) => anyhow::bail!("Compositor not found!"),
-        },
+        Err(_) => anyhow::bail!("Compositor not found!"),
     };
 
     let mut compositor_event_reader = CompositorEventReader::new();
     compositor_event_reader.add_dispatcher(Box::new(|app, event| match event {
         ReadEvent::CompositorEvent(kind) => tracing::info!("{:?}", kind),
-        ReadEvent::OutputStatus(snapshot) => tracing::info!("{:?}", snapshot),
-        ReadEvent::OutputStatusUpdated(change) => tracing::info!("{:?}", change),
+        ReadEvent::OutputStatus(snapshot) => {
+            tracing::info!("{:?}", snapshot);
+            for (output, occluded) in snapshot {
+                app.set_output_occluded(output, *occluded);
+            }
+            reinsert_render_source(app);
+        }
+        ReadEvent::OutputStatusUpdated(change) => {
+            tracing::info!("{:?}", change);
+            match change {
+                OutputStatusChange::Set { output, locked } => {
+                    app.set_output_occluded(output, *locked);
+                }
+                OutputStatusChange::Removed { output } => {
+                    app.set_output_occluded(output, false);
+                }
+            }
+            reinsert_render_source(app);
+        }
         ReadEvent::ReaderKilled(_) => {
             tracing::info!("Dispatch: ReaderKilled");
             app.stop_main_loop();
@@ -169,6 +196,22 @@ fn setup_compositor() -> Result<(AnyCompositor, CompositorEventReader, Composito
 
     let channel = calloop::channel::channel();
     Ok((compositor, compositor_event_reader, channel))
+}
+
+/// Reinsert the render source when it has been removed and there is at least one output
+/// that is no longer occluded.
+fn reinsert_render_source(app: &mut App) {
+    if !app.render_source_removed || app.all_outputs_occluded() {
+        return;
+    }
+
+    match crate::runtime::event_loop::insert_pacer(app.loop_handle.clone(), app.use_hwdec) {
+        Ok(()) => app.render_source_removed = false,
+        Err(e) => {
+            // The flag is kept, so the source is inserted again with the next status update.
+            tracing::error!("{e:#}");
+        }
+    }
 }
 
 fn configure_timing(decoder: &Decoder, timing: &mut Timing, fps: Option<u64>) {

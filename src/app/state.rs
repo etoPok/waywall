@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use calloop::LoopSignal;
+use calloop::{LoopHandle, LoopSignal};
 use ffmpeg_sys_next::{AVFrame, av_frame_free, av_frame_unref};
 use wayland_client::Proxy;
 use wayland_client::protocol::wl_buffer::WlBuffer;
@@ -32,6 +32,8 @@ pub struct Monitor {
     pub logical_width: u32,
     pub logical_height: u32,
     pub configured: bool,
+
+    pub occluded: bool,
 }
 
 impl Monitor {
@@ -47,6 +49,7 @@ impl Monitor {
             logical_width: 0,
             logical_height: 0,
             configured: false,
+            occluded: false,
         }
     }
 
@@ -71,6 +74,23 @@ impl Drop for Monitor {
             vp.destroy();
         }
     }
+}
+
+fn set_monitor_occluded(monitors: &mut [Monitor], output: &str, occluded: bool) -> bool {
+    match monitors
+        .iter_mut()
+        .find(|m| m.name.as_deref() == Some(output))
+    {
+        Some(m) => {
+            m.occluded = occluded;
+            true
+        }
+        None => false,
+    }
+}
+
+fn all_monitors_occluded(monitors: &[Monitor]) -> bool {
+    !monitors.is_empty() && monitors.iter().all(|m| m.occluded)
 }
 
 pub struct WlBufferState {
@@ -127,6 +147,14 @@ pub struct App {
     pub main_loop_signal: Option<LoopSignal>,
     pub configured: bool,
 
+    /// Handle of the main event loop
+    pub loop_handle: LoopHandle<'static, App>,
+
+    /// True while the render source is not registered in the event loop.
+    pub render_source_removed: bool,
+
+    pub use_hwdec: bool,
+
     pub render_states: Vec<RenderState>,
 
     // Decoder + Frame Queue
@@ -148,7 +176,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(wl_conn: WlConnection, decoder: Decoder, timing: Timing) -> Self {
+    pub fn new(
+        wl_conn: WlConnection,
+        decoder: Decoder,
+        timing: Timing,
+        loop_handle: LoopHandle<'static, App>,
+    ) -> Self {
         Self {
             wl_conn,
             decoder,
@@ -158,6 +191,9 @@ impl App {
             monitors: Vec::new(),
             main_loop_signal: None,
             configured: false,
+            loop_handle,
+            render_source_removed: false,
+            use_hwdec: false,
             render_states: Vec::new(),
             frame_queue: Arc::new(FrameQueue::new()),
             gl_ctx: None,
@@ -167,6 +203,18 @@ impl App {
             skipped_frames_unhandled_wl_callback: 0,
             frames_per_stats_sample: 0,
         }
+    }
+
+    /// True when every bound output is occluded.
+    pub fn all_outputs_occluded(&self) -> bool {
+        all_monitors_occluded(&self.monitors)
+    }
+
+    /// Set the occlusion state of the bound output with the given compositor output name.
+    ///
+    /// Outputs that are not bound are ignored.
+    pub fn set_output_occluded(&mut self, output: &str, occluded: bool) {
+        set_monitor_occluded(&mut self.monitors, output, occluded);
     }
 
     pub fn get_or_create_wl_buffer(
@@ -346,5 +394,61 @@ impl Drop for App {
                 crate::render::egl::eglTerminate(self.wl_conn.wl_display());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn monitor(name: &str) -> Monitor {
+        Monitor {
+            name: Some(name.to_string()),
+            output: None,
+            surface: None,
+            layer_surface: None,
+            viewport: None,
+            physical_width: 0,
+            physical_height: 0,
+            logical_width: 0,
+            logical_height: 0,
+            configured: false,
+            occluded: false,
+        }
+    }
+
+    #[test]
+    fn set_monitor_occluded_updates_the_matching_monitor() {
+        let mut monitors = vec![monitor("eDP-1"), monitor("DP-1")];
+
+        assert!(set_monitor_occluded(&mut monitors, "DP-1", true));
+        assert!(!monitors[0].occluded);
+        assert!(monitors[1].occluded);
+    }
+
+    #[test]
+    fn set_monitor_occluded_ignores_unknown_outputs() {
+        let mut monitors = vec![monitor("eDP-1")];
+
+        assert!(!set_monitor_occluded(&mut monitors, "HDMI-1", true));
+        assert!(!monitors[0].occluded);
+    }
+
+    #[test]
+    fn all_monitors_occluded_needs_every_monitor_to_be_occluded() {
+        let mut monitors = vec![monitor("eDP-1"), monitor("DP-1")];
+
+        assert!(!all_monitors_occluded(&monitors));
+
+        set_monitor_occluded(&mut monitors, "eDP-1", true);
+        assert!(!all_monitors_occluded(&monitors));
+
+        set_monitor_occluded(&mut monitors, "DP-1", true);
+        assert!(all_monitors_occluded(&monitors));
+    }
+
+    #[test]
+    fn without_monitors_nothing_is_occluded() {
+        assert!(!all_monitors_occluded(&[]));
     }
 }

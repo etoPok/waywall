@@ -6,5 +6,5 @@ fn main() -> Result<()> {
     let args = waywall::cli::args::parse();
     let bootstrap_output = waywall::app::bootstrap::bootstrap(&args)?;
 
-    waywall::runtime::event_loop::run(&args, bootstrap_output)
+    waywall::runtime::event_loop::run(bootstrap_output)
 }

@@ -579,7 +579,9 @@ mod tests {
         }
 
         let hyprland = Hyprland::connect().expect("Hyprland::connect() failed");
-        let mut app = build_test_app().expect("failed to build test App");
+        let mut event_loop: calloop::EventLoop<'static, crate::app::state::App> =
+            calloop::EventLoop::try_new().expect("failed to create event loop");
+        let mut app = build_test_app(event_loop.handle()).expect("failed to build test App");
 
         let mut compositor_event_reader = CompositorEventReader::new();
         compositor_event_reader.add_dispatcher(Box::new(move |app, event| {
@@ -591,8 +593,6 @@ mod tests {
         }));
         let (tx, rx) = calloop::channel::channel::<ReadEvent>();
 
-        let mut event_loop: calloop::EventLoop<'static, crate::app::state::App> =
-            calloop::EventLoop::try_new().expect("failed to create event loop");
         app.main_loop_signal = Some(event_loop.get_signal());
 
         let compositor_event_reader =
@@ -645,7 +645,9 @@ mod tests {
         drop(app);
     }
 
-    fn build_test_app() -> anyhow::Result<crate::app::state::App> {
+    fn build_test_app(
+        loop_handle: calloop::LoopHandle<'static, crate::app::state::App>,
+    ) -> anyhow::Result<crate::app::state::App> {
         let (conn, globals, queue) = crate::wayland::connection::WlConnection::connect()?;
         let (compositor, layer_shell) =
             crate::wayland::connection::WlConnection::bind_required_protocol_extensions(
@@ -663,6 +665,7 @@ mod tests {
             wl_conn,
             crate::decoder::Decoder::new(),
             crate::timing::Timing::new(),
+            loop_handle,
         ))
     }
 }
