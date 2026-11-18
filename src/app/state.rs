@@ -29,12 +29,10 @@ pub struct Monitor {
     pub surface: Option<WlSurface>,
     pub layer_surface: Option<ZwlrLayerSurfaceV1>,
     pub viewport: Option<WpViewport>,
+    pub layer_surface_configure: Option<(u32, u32)>,
 
     pub physical_width: u32,
     pub physical_height: u32,
-    pub logical_width: u32,
-    pub logical_height: u32,
-    pub configured: bool,
 
     pub occluded: bool,
 }
@@ -48,11 +46,9 @@ impl Monitor {
             surface: None,
             layer_surface: None,
             viewport: None,
+            layer_surface_configure: None,
             physical_width: 0,
             physical_height: 0,
-            logical_width: 0,
-            logical_height: 0,
-            configured: false,
             occluded: false,
         }
     }
@@ -167,7 +163,6 @@ pub struct App {
 
     pub monitors: Vec<Monitor>,
     pub main_loop_signal: Option<LoopSignal>,
-    pub configured: bool,
 
     /// Present only when output occlusion detection is enabled.
     pub occlusion: Option<OcclusionRuntime>,
@@ -204,7 +199,6 @@ impl App {
             converter: None,
             monitors: Vec::new(),
             main_loop_signal: None,
-            configured: false,
             occlusion: None,
             use_hwdec: false,
             render_states: HashMap::default(),

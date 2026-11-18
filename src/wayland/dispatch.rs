@@ -98,38 +98,27 @@ impl Dispatch<ZwlrLayerSurfaceV1, ObjectId> for App {
                     width,
                     height,
                 } => {
-                    let monitor = if let Some(m) = state.monitors.get_mut(index)
-                        && !state.configured
-                    {
+                    proxy.ack_configure(serial);
+
+                    let monitor = if let Some(m) = state.monitors.get_mut(index) {
                         m
                     } else {
                         return;
                     };
 
-                    monitor.logical_width = width;
-                    monitor.logical_height = height;
-                    monitor.configured = true;
-
+                    monitor.layer_surface_configure = Some((width, height));
                     if let Some(vp) = &monitor.viewport {
                         vp.set_destination(width as i32, height as i32);
-                        debug!("Viewport destination set: {}x{}", width, height);
-                    }
 
-                    debug!(
-                        "Render target: ( output: {}x{}, logical: {}x{} )",
-                        monitor.physical_width,
-                        monitor.physical_height,
-                        monitor.logical_width,
-                        monitor.logical_height
-                    );
+                        debug!(
+                            "Render target: ( output: {}x{}, logical: {}x{} )",
+                            monitor.physical_width, monitor.physical_height, width, height
+                        );
+                    }
 
                     if let Some(surface) = &monitor.surface {
                         surface.commit();
                     }
-
-                    state.configured = state.monitors.iter().all(|m| m.configured);
-
-                    proxy.ack_configure(serial);
                 }
                 zwlr_layer_surface_v1::Event::Closed => {
                     warn!("Layer surface closed by the compositor");
@@ -137,7 +126,6 @@ impl Dispatch<ZwlrLayerSurfaceV1, ObjectId> for App {
                         state.render_states.remove(&m.proxy.id());
                     }
                     state.monitors.remove(index);
-                    state.configured = state.monitors.iter().all(|m| m.configured);
                     if state.monitors.is_empty()
                         && let Some(signal) = &state.main_loop_signal
                     {

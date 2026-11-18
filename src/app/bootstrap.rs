@@ -59,11 +59,17 @@ pub fn bootstrap_gl_egl(args: &Args) -> Result<BootstrapOutput> {
     filter_outputs_by_name(&mut app.monitors, &args.outputs)?;
     create_layer_shell_surfaces(&mut app);
 
-    app.wait_dispatch_events(&mut queue, std::time::Duration::from_secs(2), |_app| {
-        _app.configured
+    app.wait_dispatch_events(&mut queue, std::time::Duration::from_secs(2), |app| {
+        app.monitors
+            .iter()
+            .all(|m| m.layer_surface_configure.is_some())
     })?;
 
-    if !app.configured {
+    if !app
+        .monitors
+        .iter()
+        .all(|m| m.layer_surface_configure.is_some())
+    {
         bail!("Compositor did not send zwl_layer_surface_v1.configure within waiting time.");
     }
 
@@ -98,11 +104,18 @@ pub fn bootstrap_drm(args: &Args) -> Result<BootstrapOutput> {
     filter_outputs_by_name(&mut app.monitors, &args.outputs)?;
     create_layer_shell_surfaces(&mut app);
 
-    app.wait_dispatch_events(&mut queue, std::time::Duration::from_secs(2), |_app| {
-        _app.configured && _app.wl_conn.main_device.is_some()
+    app.wait_dispatch_events(&mut queue, std::time::Duration::from_secs(2), |app| {
+        app.monitors
+            .iter()
+            .all(|m| m.layer_surface_configure.is_some())
+            && app.wl_conn.main_device.is_some()
     })?;
 
-    if !app.configured {
+    if !app
+        .monitors
+        .iter()
+        .all(|m| m.layer_surface_configure.is_some())
+    {
         feedback.destroy();
         bail!("Compositor did not send zwl_layer_surface_v1.configure within waiting time.");
     }
@@ -316,16 +329,8 @@ fn initialize_gl_egl(app: &mut App) -> Result<(), anyhow::Error> {
             monitor.wl_surface()
         };
 
-        let width = if monitor.physical_width > 0 {
-            monitor.physical_width
-        } else {
-            monitor.logical_width.max(1920)
-        } as i32;
-        let height = if monitor.physical_height > 0 {
-            monitor.physical_height
-        } else {
-            monitor.logical_height.max(1080)
-        } as i32;
+        let width = monitor.physical_width as i32;
+        let height = monitor.physical_height as i32;
 
         let (egl_surface, egl_window) =
             unsafe { create_egl_surface(egl_display, wl_surface_ptr, egl_config, width, height)? };
