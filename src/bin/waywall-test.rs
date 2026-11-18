@@ -5,6 +5,7 @@ use calloop::timer::Timer;
 use ffmpeg_sys_next::AVFrame;
 use tracing::{debug, info, warn};
 
+use wayland_client::Proxy;
 use waywall::app::state::{App, Monitor};
 
 #[path = "common/test_args.rs"]
@@ -183,10 +184,17 @@ where
 
         waywall::render::frame::upload_frame(&gl_ctx.textures, frame);
 
-        for (i, rs) in app.render_states.iter_mut().enumerate() {
+        for (i, monitor) in app.monitors.iter().enumerate() {
             if !should_render(&app.monitors, i) {
                 continue;
             }
+
+            let monitor_proxy_id = monitor.proxy.id();
+            let rs = if let Some(rs) = app.render_states.get_mut(&monitor_proxy_id) {
+                rs
+            } else {
+                continue;
+            };
 
             if !rs.wl_callback_handled {
                 app.skipped_frames_unhandled_wl_callback += 1;
@@ -214,7 +222,7 @@ where
 
             gl_ctx.quad.draw();
 
-            rs.surface.frame(&app.wl_conn.qh, i);
+            rs.surface.frame(&app.wl_conn.qh, monitor_proxy_id);
             rs.wl_callback_handled = false;
 
             waywall::render::egl::eglSwapBuffers(rs.egl_display, rs.egl_surface);

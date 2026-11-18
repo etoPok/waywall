@@ -1,4 +1,5 @@
 use tracing::{debug, error, warn};
+use wayland_backend::client::ObjectId;
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
     globals::GlobalListContents,
@@ -62,7 +63,7 @@ impl Dispatch<WlOutput, ()> for App {
         if let Some(monitor) = state
             .monitors
             .iter_mut()
-            .find(|o| o.output.as_ref().is_some_and(|out| out.id() == proxy.id()))
+            .find(|o| o.proxy.id() == proxy.id())
         {
             match event {
                 wl_output::Event::Mode { width, height, .. } => {
@@ -71,11 +72,8 @@ impl Dispatch<WlOutput, ()> for App {
                     debug!("Output {} detected: {}x{}", proxy.id(), width, height);
                 }
                 wl_output::Event::Name { name } => {
+                    debug!("Output {} detected", name);
                     monitor.name = Some(name);
-                    debug!(
-                        "Output {} detected",
-                        monitor.name.as_deref().unwrap_or("unknown")
-                    );
                 }
                 _ => {}
             }
@@ -83,24 +81,31 @@ impl Dispatch<WlOutput, ()> for App {
     }
 }
 
-impl Dispatch<ZwlrLayerSurfaceV1, usize> for App {
+impl Dispatch<ZwlrLayerSurfaceV1, ObjectId> for App {
     fn event(
         state: &mut App,
         proxy: &ZwlrLayerSurfaceV1,
         event: zwlr_layer_surface_v1::Event,
-        data: &usize,
+        data: &ObjectId,
         _conn: &Connection,
         _qh: &QueueHandle<App>,
     ) {
-        match event {
-            zwlr_layer_surface_v1::Event::Configure {
-                serial,
-                width,
-                height,
-            } => {
-                if let Some(monitor) = state.monitors.get_mut(*data)
-                    && !state.configured
-                {
+        let output_idx = state.monitors.iter().position(|o| o.proxy.id() == *data);
+        if let Some(index) = output_idx {
+            match event {
+                zwlr_layer_surface_v1::Event::Configure {
+                    serial,
+                    width,
+                    height,
+                } => {
+                    let monitor = if let Some(m) = state.monitors.get_mut(index)
+                        && !state.configured
+                    {
+                        m
+                    } else {
+                        return;
+                    };
+
                     monitor.logical_width = width;
                     monitor.logical_height = height;
                     monitor.configured = true;
@@ -123,17 +128,24 @@ impl Dispatch<ZwlrLayerSurfaceV1, usize> for App {
                     }
 
                     state.configured = state.monitors.iter().all(|m| m.configured);
-                }
 
-                proxy.ack_configure(serial);
-            }
-            zwlr_layer_surface_v1::Event::Closed => {
-                warn!("Layer surface closed by the compositor");
-                if let Some(signal) = &state.main_loop_signal {
-                    signal.stop();
+                    proxy.ack_configure(serial);
                 }
+                zwlr_layer_surface_v1::Event::Closed => {
+                    warn!("Layer surface closed by the compositor");
+                    if let Some(m) = state.monitors.get(index) {
+                        state.render_states.remove(&m.proxy.id());
+                    }
+                    state.monitors.remove(index);
+                    state.configured = state.monitors.iter().all(|m| m.configured);
+                    if state.monitors.is_empty()
+                        && let Some(signal) = &state.main_loop_signal
+                    {
+                        signal.stop();
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
 }
@@ -200,16 +212,16 @@ impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for App {
     }
 }
 
-impl Dispatch<WlCallback, usize> for App {
+impl Dispatch<WlCallback, ObjectId> for App {
     fn event(
         state: &mut Self,
         _proxy: &WlCallback,
         _event: <WlCallback as Proxy>::Event,
-        data: &usize,
+        data: &ObjectId,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        if let Some(rs) = state.render_states.get_mut(*data) {
+        if let Some(rs) = state.render_states.get_mut(data) {
             rs.wl_callback_handled = true;
         }
     }

@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use calloop::EventLoop;
 use calloop::ping::{self, PingSource};
 use tracing::{debug, warn};
-use wayland_client::EventQueue;
+use wayland_client::{EventQueue, Proxy};
 
 use super::state::{App, Monitor};
 use crate::cli::args::Args;
@@ -150,12 +150,26 @@ fn common_connection() -> Result<(App, EventQueue<App>, EventLoop<'static, App>)
         EventLoop::try_new().context("Error creating event loop")?;
 
     let mut app = App::new(wl_conn, Decoder::new(), Timing::new());
-    app.monitors.extend(
-        app.wl_conn
-            .bind_all_available_wl_outputs()
-            .into_iter()
-            .map(Monitor::new),
-    );
+    let registry = app.wl_conn.globals.registry();
+    for global in app.wl_conn.globals.contents().clone_list() {
+        if global.interface == "wl_output" {
+            if global.version >= 4 {
+                let proxy = registry.bind::<wayland_client::protocol::wl_output::WlOutput, _, _>(
+                    global.name,
+                    4,
+                    &app.wl_conn.qh,
+                    (),
+                );
+                app.monitors.push(Monitor::new(proxy, global.name));
+            } else {
+                tracing::warn!(
+                    "Ignoring wl_output {}: supports version {}, but >= 4 is required",
+                    global.name,
+                    global.version
+                );
+            }
+        }
+    }
 
     Ok((app, queue, event_loop))
 }
@@ -332,14 +346,17 @@ fn initialize_gl_egl(app: &mut App) -> Result<(), anyhow::Error> {
             egl_make_current = false;
         }
 
-        app.render_states.push(RenderState::new(
-            egl_display,
-            egl_surface,
-            egl_window,
-            monitor.surface.as_ref().unwrap().clone(),
-            width,
-            height,
-        ));
+        app.render_states.insert(
+            monitor.proxy.id(),
+            RenderState::new(
+                egl_display,
+                egl_surface,
+                egl_window,
+                monitor.surface.as_ref().unwrap().clone(),
+                width,
+                height,
+            ),
+        );
     }
 
     gl::load_with(|name| {
@@ -396,20 +413,25 @@ fn create_layer_shell_surfaces(app: &mut App) {
         app.wl_conn.viewporter.as_ref(),
     );
 
-    for (i, monitor) in app.monitors.iter_mut().enumerate() {
+    for monitor in app.monitors.iter_mut() {
         if monitor.physical_width == 0 || monitor.physical_height == 0 {
             warn!("Output dimensions not detected, using 1920x1080 as fallback");
             monitor.physical_width = 1920;
             monitor.physical_height = 1080;
         }
 
-        crate::wayland::surfaces::create_surface(
+        let (surface, layer_surface) = crate::wayland::surfaces::create_surface(
             compositor,
+            &monitor.proxy,
             layer_shell,
-            viewporter,
             &app.wl_conn.qh,
-            monitor,
-            i,
         );
+
+        if let Some(vp) = viewporter {
+            monitor.viewport = Some(vp.get_viewport(&surface, &app.wl_conn.qh, ()));
+        }
+
+        monitor.surface = Some(surface);
+        monitor.layer_surface = Some(layer_surface);
     }
 }

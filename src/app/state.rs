@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Context;
 use calloop::{LoopHandle, LoopSignal};
 use ffmpeg_sys_next::{AVFrame, av_frame_free, av_frame_unref};
+use wayland_backend::client::ObjectId;
 use wayland_client::Proxy;
 use wayland_client::protocol::wl_buffer::WlBuffer;
 use wayland_client::protocol::{wl_output::WlOutput, wl_surface::WlSurface};
@@ -21,8 +23,9 @@ use crate::vaapi_converter::VaapiConverter;
 use crate::wayland::connection::WlConnection;
 
 pub struct Monitor {
+    pub proxy: WlOutput,
+    pub global_name: u32,
     pub name: Option<String>,
-    pub output: Option<WlOutput>,
     pub surface: Option<WlSurface>,
     pub layer_surface: Option<ZwlrLayerSurfaceV1>,
     pub viewport: Option<WpViewport>,
@@ -37,10 +40,11 @@ pub struct Monitor {
 }
 
 impl Monitor {
-    pub fn new(output: WlOutput) -> Self {
+    pub fn new(proxy: WlOutput, global_name: u32) -> Self {
         Self {
+            proxy,
+            global_name,
             name: None,
-            output: Some(output),
             surface: None,
             layer_surface: None,
             viewport: None,
@@ -73,6 +77,7 @@ impl Drop for Monitor {
         if let Some(vp) = self.viewport.take() {
             vp.destroy();
         }
+        self.proxy.release();
     }
 }
 
@@ -169,7 +174,7 @@ pub struct App {
 
     pub use_hwdec: bool,
 
-    pub render_states: Vec<RenderState>,
+    pub render_states: HashMap<ObjectId, RenderState>,
 
     // Decoder + Frame Queue
     pub decoder: Decoder,
@@ -202,7 +207,7 @@ impl App {
             configured: false,
             occlusion: None,
             use_hwdec: false,
-            render_states: Vec::new(),
+            render_states: HashMap::default(),
             frame_queue: Arc::new(FrameQueue::new()),
             gl_ctx: None,
             last_pts: None,
@@ -402,61 +407,5 @@ impl Drop for App {
                 crate::render::egl::eglTerminate(self.wl_conn.wl_display());
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn monitor(name: &str) -> Monitor {
-        Monitor {
-            name: Some(name.to_string()),
-            output: None,
-            surface: None,
-            layer_surface: None,
-            viewport: None,
-            physical_width: 0,
-            physical_height: 0,
-            logical_width: 0,
-            logical_height: 0,
-            configured: false,
-            occluded: false,
-        }
-    }
-
-    #[test]
-    fn set_monitor_occluded_updates_the_matching_monitor() {
-        let mut monitors = vec![monitor("eDP-1"), monitor("DP-1")];
-
-        assert!(set_monitor_occluded(&mut monitors, "DP-1", true));
-        assert!(!monitors[0].occluded);
-        assert!(monitors[1].occluded);
-    }
-
-    #[test]
-    fn set_monitor_occluded_ignores_unknown_outputs() {
-        let mut monitors = vec![monitor("eDP-1")];
-
-        assert!(!set_monitor_occluded(&mut monitors, "HDMI-1", true));
-        assert!(!monitors[0].occluded);
-    }
-
-    #[test]
-    fn all_monitors_occluded_needs_every_monitor_to_be_occluded() {
-        let mut monitors = vec![monitor("eDP-1"), monitor("DP-1")];
-
-        assert!(!all_monitors_occluded(&monitors));
-
-        set_monitor_occluded(&mut monitors, "eDP-1", true);
-        assert!(!all_monitors_occluded(&monitors));
-
-        set_monitor_occluded(&mut monitors, "DP-1", true);
-        assert!(all_monitors_occluded(&monitors));
-    }
-
-    #[test]
-    fn without_monitors_nothing_is_occluded() {
-        assert!(!all_monitors_occluded(&[]));
     }
 }

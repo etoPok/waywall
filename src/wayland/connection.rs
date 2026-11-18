@@ -2,7 +2,7 @@ use anyhow::{Context, Ok, Result};
 use wayland_client::{
     Connection, EventQueue, QueueHandle,
     globals::{GlobalList, registry_queue_init},
-    protocol::{wl_compositor::WlCompositor, wl_output::WlOutput},
+    protocol::wl_compositor::WlCompositor,
 };
 use wayland_protocols::wp::{
     linux_dmabuf::zv1::client::{
@@ -88,26 +88,6 @@ impl WlConnection {
         )?;
         self.dmabuf = Some(dmabuf);
         Ok(())
-    }
-
-    pub fn bind_all_available_wl_outputs(&mut self) -> Vec<WlOutput> {
-        let mut outputs: Vec<WlOutput> = Vec::new();
-        let registry = self.globals.registry();
-        for global in self.globals.contents().clone_list() {
-            if global.interface == "wl_output" {
-                if global.version >= 4 {
-                    let output = registry.bind::<WlOutput, _, _>(global.name, 4, &self.qh, ());
-                    outputs.push(output);
-                } else {
-                    tracing::warn!(
-                        "Ignoring wl_output {}: supports version {}, but >= 4 is required",
-                        global.name,
-                        global.version
-                    );
-                }
-            }
-        }
-        outputs
     }
 
     pub fn get_default_feedback(&mut self) -> Result<ZwpLinuxDmabufFeedbackV1> {
