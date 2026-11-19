@@ -3,10 +3,11 @@ use std::{
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
 
-use crate::wayland::ipc::{hyprland::Hyprland, niri::Niri};
+use crate::compositor::{hyprland::Hyprland, niri::Niri};
 
 pub mod hyprland;
 pub mod niri;
+pub mod occlusion;
 
 mod request;
 

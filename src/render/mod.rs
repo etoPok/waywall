@@ -1,3 +1,5 @@
+pub mod drm;
 pub mod egl;
-pub mod frame;
+pub mod shader;
 pub mod state;
+pub mod texture;

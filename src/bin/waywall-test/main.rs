@@ -8,10 +8,8 @@ use tracing::{debug, info, warn};
 use wayland_client::Proxy;
 use waywall::app::state::{App, Monitor};
 
-#[path = "common/test_args.rs"]
 mod test_args;
 
-#[path = "common/utils.rs"]
 mod utils;
 
 type PacerTick = fn(&mut App, &fn(&mut App, *mut AVFrame)) -> calloop::timer::TimeoutAction;
@@ -162,7 +160,7 @@ where
     }
 
     use ffmpeg_sys_next::AVPixelFormat;
-    use waywall::shader::Shader;
+    use waywall::render::shader::Shader;
 
     let fmt = unsafe { (*frame).format as u32 };
     let gl_ctx = app.gl_ctx.as_mut().unwrap();
@@ -178,11 +176,11 @@ where
     };
     unsafe {
         if gl_ctx.textures.is_empty() {
-            gl_ctx.textures = waywall::render::frame::init_textures(frame);
+            gl_ctx.textures = waywall::render::texture::init_textures(frame);
             debug!("Textures created ({} textures)", gl_ctx.textures.len());
         }
 
-        waywall::render::frame::upload_frame(&gl_ctx.textures, frame);
+        waywall::render::texture::upload_frame(&gl_ctx.textures, frame);
 
         for (i, monitor) in app.monitors.iter().enumerate() {
             if !should_render(&app.monitors, i) {
@@ -263,7 +261,7 @@ where
     }
 
     use tracing::{error, warn};
-    use waywall::vaapi_converter::VaapiConverter;
+    use waywall::render::drm::converter::VaapiConverter;
 
     if app.converter.is_none() {
         let w = unsafe { (*frame).width };

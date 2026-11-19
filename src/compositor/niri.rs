@@ -5,8 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::wayland::ipc::request::wait_for_shutdown;
-use crate::wayland::ipc::{Compositor, CompositorEvent, ReadEvent};
+use crate::compositor::{Compositor, CompositorEvent, ReadEvent, request::wait_for_shutdown};
 use anyhow::Context;
 
 #[derive(Clone)]

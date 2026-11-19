@@ -14,12 +14,12 @@ use wayland_protocols::wp::linux_dmabuf::zv1::client::zwp_linux_buffer_params_v1
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 
-use crate::decoder::Decoder;
-use crate::drm_frame::DrmFrame;
-use crate::frame_queue::FrameQueue;
+use crate::render::drm::converter::VaapiConverter;
+use crate::render::drm::frame::DrmFrame;
 use crate::render::state::{GlContext, RenderState};
-use crate::timing::Timing;
-use crate::vaapi_converter::VaapiConverter;
+use crate::video::decoder::Decoder;
+use crate::video::frame_queue::FrameQueue;
+use crate::video::timing::Timing;
 use crate::wayland::connection::WlConnection;
 
 pub struct Monitor {

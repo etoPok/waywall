@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Ok};
 
-use crate::wayland::ipc::{
+use crate::compositor::{
     Compositor, CompositorEvent, OutputId, OutputStatusChange, ToplevelId, WorkspaceId,
 };
 

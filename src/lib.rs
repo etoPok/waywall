@@ -2,15 +2,9 @@
 
 pub mod app;
 pub mod cli;
-pub mod decoder;
-pub mod drm_frame;
-pub mod drm_node;
-pub mod frame_queue;
+pub mod compositor;
 pub mod logging;
-pub mod occlusion;
 pub mod render;
 pub mod runtime;
-pub mod shader;
-pub mod timing;
-pub mod vaapi_converter;
+pub mod video;
 pub mod wayland;

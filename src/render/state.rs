@@ -4,7 +4,7 @@ use crate::render::egl::{
     EGL_NO_CONTEXT, EGL_NO_SURFACE, eglDestroyContext, eglDestroySurface, eglMakeCurrent,
 };
 use crate::render::egl::{wl_egl_window_destroy, wl_egl_window_resize};
-use crate::shader::{QuadGeometry, Shader};
+use crate::render::shader::{QuadGeometry, Shader};
 
 pub struct RenderState {
     pub egl_display: *mut c_void,

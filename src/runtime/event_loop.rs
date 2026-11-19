@@ -2,15 +2,15 @@ use std::time::Duration;
 
 use crate::app::bootstrap::CompositorIntegration;
 use crate::app::state::{App, Monitor};
-use crate::shader::Shader;
-use crate::vaapi_converter::VaapiConverter;
+use crate::render::{drm::converter::VaapiConverter, shader::Shader};
 use anyhow::Context;
-use calloop::ping::PingSource;
-use calloop::timer::{TimeoutAction, Timer};
-use calloop::{EventLoop, LoopHandle};
+use calloop::{
+    EventLoop, LoopHandle,
+    ping::PingSource,
+    timer::{TimeoutAction, Timer},
+};
 use calloop_wayland_source::WaylandSource;
 use ffmpeg_sys_next::{AVFrame, AVPixelFormat};
-use tracing::{debug, error, info, warn};
 use wayland_client::{EventQueue, Proxy};
 
 pub fn build_common_loop(
@@ -60,7 +60,7 @@ pub fn build_common_loop(
                         .borrow_mut()
                         .spawn(tx, compositor.clone())
                 {
-                    error!("{e:#}");
+                    tracing::error!("{e:#}");
                 }
                 TimeoutAction::Drop
             })
@@ -72,9 +72,11 @@ pub fn build_common_loop(
         .insert_source(Timer::from_duration(Duration::from_secs(5)), |_, _, app| {
             let frames = app.frames_per_stats_sample;
             let fps = frames as f64 / 5.0;
-            info!(
+            tracing::info!(
                 "Stats: {:.1} fps, {} frames, {} dropped frames",
-                fps, frames, app.dropped_frames
+                fps,
+                frames,
+                app.dropped_frames
             );
             app.frames_per_stats_sample = 0;
             calloop::timer::TimeoutAction::ToDuration(Duration::from_secs(5))
@@ -83,7 +85,7 @@ pub fn build_common_loop(
 
     crate::runtime::signals::ctrlc_setup(app.main_loop_signal.as_ref().unwrap().clone())
         .context("Error setting up signal handlers")?;
-    debug!("Event loop started. Ctrl+C to exit.");
+    tracing::debug!("Event loop started. Ctrl+C to exit.");
 
     Ok(())
 }
@@ -170,7 +172,7 @@ pub fn reinsert_render_source(app: &mut App) {
         }
         Err(e) => {
             // The flag is kept, so the source is inserted again with the next status update.
-            error!("{e:#}");
+            tracing::error!("{e:#}");
         }
     }
 }
@@ -192,7 +194,7 @@ where
             -1 => {
                 app.frame_queue.commit_read();
                 app.dropped_frames += 1;
-                debug!("Frame dropped");
+                tracing::debug!("Frame dropped");
             }
             0 => {
                 on_frame(app, frame);
@@ -211,7 +213,7 @@ where
         if let Some(occlusion) = app.occlusion.as_mut() {
             occlusion.render_source_removed = true;
         }
-        debug!("All outputs are occluded, removing the render source");
+        tracing::debug!("All outputs are occluded, removing the render source");
         return TimeoutAction::Drop;
     }
 
@@ -250,7 +252,7 @@ where
     } else if fmt == AVPixelFormat::AV_PIX_FMT_NV12 as i32 as u32 {
         &gl_ctx.shader_nv12
     } else {
-        warn!("Unsupported pixel format, skipping frame");
+        tracing::warn!("Unsupported pixel format, skipping frame");
         app.frame_queue.commit_read();
         app.dropped_frames += 1;
         return;
@@ -259,11 +261,11 @@ where
         // TODO: make the GL context explicitly current before creating/uploading
         // textures, instead of relying on the context left current by bootstrap
         if gl_ctx.textures.is_empty() {
-            gl_ctx.textures = crate::render::frame::init_textures(frame);
-            debug!("Textures created ({} textures)", gl_ctx.textures.len());
+            gl_ctx.textures = crate::render::texture::init_textures(frame);
+            tracing::debug!("Textures created ({} textures)", gl_ctx.textures.len());
         }
 
-        crate::render::frame::upload_frame(&gl_ctx.textures, frame);
+        crate::render::texture::upload_frame(&gl_ctx.textures, frame);
 
         for (i, monitor) in app.monitors.iter().enumerate() {
             if !should_render(&app.monitors, i) {
@@ -335,7 +337,7 @@ where
         let frames = match app.decoder.hw_frames_ctx() {
             Some(f) => f,
             None => {
-                error!("VAAPI converter: hw_frames_ctx not available");
+                tracing::error!("VAAPI converter: hw_frames_ctx not available");
                 app.frame_queue.commit_read();
                 app.stop_main_loop();
                 return;
@@ -346,7 +348,7 @@ where
                 app.converter = Some(converter);
             }
             Err(e) => {
-                error!("Failed to create VAAPI converter: {e:#}");
+                tracing::error!("Failed to create VAAPI converter: {e:#}");
                 app.frame_queue.commit_read();
                 app.stop_main_loop();
                 return;
@@ -360,11 +362,11 @@ where
             Ok(None) => {
                 app.frame_queue.commit_read();
                 app.dropped_frames += 1;
-                warn!("WlBuffer not free. Dropped frame");
+                tracing::warn!("WlBuffer not free. Dropped frame");
                 return;
             }
             Err(e) => {
-                error!("{e:#}");
+                tracing::error!("{e:#}");
                 app.frame_queue.commit_read();
                 return;
             }

@@ -10,18 +10,19 @@ use wayland_client::{EventQueue, Proxy};
 
 use super::state::{App, Monitor};
 use crate::cli::args::Args;
-use crate::decoder::Decoder;
-use crate::drm_node::render_node_from_main_device;
+use crate::compositor::{
+    AnyCompositor, CompositorChannel, CompositorEventReader, OutputStatusChange, ReadEvent,
+    hyprland::Hyprland,
+};
+use crate::render::drm::node::render_node_from_main_device;
 use crate::render::egl::{
     create_egl_ctx, create_egl_surface, eglDestroyContext, eglDestroySurface, eglMakeCurrent,
     eglSwapInterval, init_egl_display, wl_egl_window_destroy,
 };
 use crate::render::state::{GlContext, RenderState};
-use crate::timing::Timing;
+use crate::video::decoder::Decoder;
+use crate::video::timing::Timing;
 use crate::wayland::connection::WlConnection;
-use crate::wayland::ipc::{
-    AnyCompositor, CompositorChannel, CompositorEventReader, OutputStatusChange, ReadEvent,
-};
 
 pub struct CompositorIntegration {
     pub compositor: AnyCompositor,
@@ -200,7 +201,7 @@ fn setup_compositor(
         event_loop.handle(),
     ));
 
-    let compositor: AnyCompositor = match crate::wayland::ipc::hyprland::Hyprland::connect() {
+    let compositor: AnyCompositor = match Hyprland::connect() {
         Ok(h) => AnyCompositor::Hyprland(h),
         Err(_) => anyhow::bail!("Compositor not found!"),
     };

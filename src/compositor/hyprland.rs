@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::request::{Framing, request_json, wait_for_shutdown};
-use crate::occlusion::OcclusionTracker;
-use crate::wayland::ipc::{
+use crate::compositor::occlusion::OcclusionTracker;
+use crate::compositor::{
     Compositor, CompositorEvent, OutputId, ReadEvent, ToplevelId, WorkspaceId,
 };
 use anyhow::Context;
@@ -362,7 +362,7 @@ impl Compositor for Hyprland {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wayland::ipc::{CompositorEventKind, CompositorEventReader, ReadEvent};
+    use crate::compositor::{CompositorEventKind, CompositorEventReader, ReadEvent};
 
     fn hyprland_env_available() -> bool {
         if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
@@ -663,8 +663,8 @@ mod tests {
 
         let mut app = crate::app::state::App::new(
             wl_conn,
-            crate::decoder::Decoder::new(),
-            crate::timing::Timing::new(),
+            crate::video::decoder::Decoder::new(),
+            crate::video::timing::Timing::new(),
         );
         app.occlusion = Some(crate::app::state::OcclusionRuntime::new(loop_handle));
         Ok(app)

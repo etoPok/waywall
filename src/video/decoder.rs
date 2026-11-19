@@ -10,7 +10,7 @@ use calloop::ping::Ping;
 use ffmpeg_sys_next::*;
 use tracing::{debug, error, warn};
 
-use crate::frame_queue::FrameQueue;
+use crate::video::frame_queue::FrameQueue;
 
 unsafe extern "C" fn vaapi_get_format(
     ctx: *mut AVCodecContext,
